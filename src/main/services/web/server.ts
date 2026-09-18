@@ -12,6 +12,7 @@ import {
   type DbPost,
   type DbUser,
   type PostFilters,
+  type PostSortField,
   type UpdateUserSettingsInput
 } from '../../database'
 import { findMediaFiles, fromUrlPath, getDownloadPath, isPathInDownloadRoot } from '../media'
@@ -214,6 +215,13 @@ function buildFeedFilters(url: URL): PostFilters {
     analyzedOnly,
     keyword: url.searchParams.get('keyword') || undefined
   }
+}
+
+/** 网页端只放行这两项排序，认不出的值一律回落发布时间。用 Set 而非对象查表：后者 `__proto__` 之类的键会命中原型链 */
+const FEED_SORT_FIELDS = new Set<string>(['create_time', 'downloaded_at'])
+
+function parseSortField(value: string | null): PostSortField {
+  return value && FEED_SORT_FIELDS.has(value) ? (value as PostSortField) : 'create_time'
 }
 
 function buildAuthorPayload(user: DbUser): Record<string, unknown> {
@@ -563,7 +571,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     })
     const filters = buildFeedFilters(url)
     const result = getAllPosts(page, pageSize, filters, {
-      field: 'downloaded_at',
+      field: parseSortField(url.searchParams.get('sort')),
       order: 'DESC'
     })
     respondJson(response, 200, {

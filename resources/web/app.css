@@ -143,6 +143,7 @@ input { border: none; outline: none; background: none; }
 }
 
 .top-bar-pill {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -247,6 +248,63 @@ input { border: none; outline: none; background: none; }
 }
 
 .filter-pill[aria-pressed="true"] svg { opacity: 1; }
+
+/* 窄屏顶栏放不下两个胶囊时，排序只留图标，文字靠 title 提示 */
+@media (max-width: 560px) {
+  .sort-pill { padding: 0 12px; }
+  .sort-pill span { display: none; }
+}
+
+/* 排序菜单：绝对定位挂在顶栏胶囊下方（胶囊已设 position: relative） */
+.sort-pill.is-open {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.sort-menu {
+  position: absolute;
+  top: calc(100% - 6px);
+  right: 8px;
+  z-index: 20;
+  min-width: 136px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-radius: 16px;
+  background: rgba(20, 20, 30, 0.97);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+}
+
+.sort-menu[hidden] { display: none; }
+
+.sort-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 38px;
+  padding: 0 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  color: var(--text-2);
+  text-align: left;
+  transition: background 150ms, color 150ms;
+}
+
+.sort-option:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+.sort-option.is-active { color: var(--text); }
+
+.sort-option.is-active::after {
+  content: '✓';
+  font-size: 12px;
+  color: #a48bff;
+}
 
 /* ── Author bar ── */
 .author-bar {
@@ -693,6 +751,14 @@ input { border: none; outline: none; background: none; }
 .rail-button:hover { background: var(--glass-surface-hi); }
 .rail-button:active { transform: scale(0.92); }
 .rail-button svg { width: 22px; height: 22px; }
+.rail-button.is-active {
+  color: #1a1330;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border-color: transparent;
+}
+.rail-button.is-active:hover {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
 
 .story-gallery-nav {
   position: absolute;

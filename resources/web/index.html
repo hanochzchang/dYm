@@ -10,7 +10,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>dYm Feed</title>
-    <link rel="stylesheet" href="/app.css?v=10" />
+    <link rel="stylesheet" href="/app.css?v=13" />
   </head>
   <body>
     <div class="ambient" aria-hidden="true">
@@ -35,6 +35,17 @@
             <button id="searchClear" class="search-clear" type="button" aria-label="清除" hidden>
               <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="m12 10.6 5-5 1.4 1.4-5 5 5 5-1.4 1.4-5-5-5 5L5.6 17l5-5-5-5L7 5.6l5 5Z"/></svg>
             </button>
+          </div>
+          <button id="sortToggle" class="filter-pill sort-pill" type="button" title="切换排序方式" aria-haspopup="listbox" aria-expanded="false">
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+              <path fill="currentColor" d="M3 5h18v2H3V5Zm0 6h12v2H3v-2Zm0 6h6v2H3v-2Z"/>
+            </svg>
+            <span id="sortLabel">发布时间</span>
+          </button>
+          <div id="sortMenu" class="sort-menu" role="listbox" aria-label="排序方式" hidden>
+            <button class="sort-option" type="button" role="option" data-sort="create_time" aria-checked="true">发布时间</button>
+            <button class="sort-option" type="button" role="option" data-sort="downloaded_at" aria-checked="false">下载时间</button>
+            <button class="sort-option" type="button" role="option" data-sort="random" aria-checked="false">随机</button>
           </div>
           <button id="analyzedToggle" class="filter-pill" type="button" aria-pressed="false" title="仅看已分析作品">
             <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
@@ -72,6 +83,6 @@
 
     <div id="toast" class="glass toast" role="status" aria-live="polite"></div>
 
-    <script type="module" src="/app.js?v=10"></script>
+    <script type="module" src="/app.js?v=13"></script>
   </body>
 </html>

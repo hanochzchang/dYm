@@ -8,6 +8,11 @@ const state = {
   hasMore: true,
   loading: false,
   globalMuted: true,
+  autoplayNext: false,
+  feedSort: 'create_time',
+  shufflePool: [],
+  shuffleCursor: 0,
+  shuffleKey: '',
   activePostId: null,
   playerPosts: [],
   playerStartIndex: 0,
@@ -48,7 +53,10 @@ const el = {
   toast: document.getElementById('toast'),
   searchInput: document.getElementById('searchInput'),
   searchClear: document.getElementById('searchClear'),
-  analyzedToggle: document.getElementById('analyzedToggle')
+  analyzedToggle: document.getElementById('analyzedToggle'),
+  sortToggle: document.getElementById('sortToggle'),
+  sortLabel: document.getElementById('sortLabel'),
+  sortMenu: document.getElementById('sortMenu')
 }
 
 let storyObserver = null
@@ -66,7 +74,9 @@ const icons = {
   play: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>',
   gear: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm0 6a2 2 0 1 1 0-4 2 2 0 0 1 0 4Zm7.4-2c0-.34-.03-.67-.07-1l2.02-1.58-2-3.46-2.39.96a7.3 7.3 0 0 0-1.73-1l-.36-2.52h-4l-.36 2.52c-.62.25-1.2.59-1.73 1l-2.39-.96-2 3.46L3.27 11a7.5 7.5 0 0 0 0 2l-2.02 1.58 2 3.46 2.39-.96c.53.41 1.11.75 1.73 1l.36 2.52h4l.36-2.52c.62-.25 1.2-.59 1.73-1l2.39.96 2-3.46L19.33 13c.04-.33.07-.66.07-1Z"/></svg>',
   close:
-    '<svg viewBox="0 0 24 24"><path fill="currentColor" d="m12 10.6 5-5 1.4 1.4-5 5 5 5-1.4 1.4-5-5-5 5L5.6 17l5-5-5-5L7 5.6l5 5Z"/></svg>'
+    '<svg viewBox="0 0 24 24"><path fill="currentColor" d="m12 10.6 5-5 1.4 1.4-5 5 5 5-1.4 1.4-5-5-5 5L5.6 17l5-5-5-5L7 5.6l5 5Z"/></svg>',
+  autoplay:
+    '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 18l8.5-6L6 6v12ZM16 6v12h2.5V6H16Z"/></svg>'
 }
 
 function esc(value) {
@@ -141,6 +151,9 @@ function captureBrowseSnapshot() {
     page: state.page,
     total: state.total,
     hasMore: state.hasMore,
+    shufflePool: state.shufflePool,
+    shuffleCursor: state.shuffleCursor,
+    shuffleKey: state.shuffleKey,
     authors: state.authors.slice(),
     filters: { ...state.filters },
     searchValue: el.searchInput.value,
@@ -159,6 +172,9 @@ function restoreBrowseSnapshot(snap) {
   state.page = snap.page
   state.total = snap.total
   state.hasMore = snap.hasMore
+  state.shufflePool = snap.shufflePool
+  state.shuffleCursor = snap.shuffleCursor
+  state.shuffleKey = snap.shuffleKey
   state.authors = snap.authors
   state.filters = { ...snap.filters }
   el.searchInput.value = snap.searchValue
@@ -610,6 +626,99 @@ function bindGridItems() {
   })
 }
 
+/** 随机模式抓全库时的页大小：故意开得比服务端上限大，让服务端自己夹到它的上限 */
+const FETCH_ALL_PAGE_SIZE = 999
+/** 抓全库的并发批大小，避免上百个请求同时打过去 */
+const FETCH_CONCURRENCY = 8
+
+function currentFilterKey() {
+  const f = state.filters
+  return `${f.secUid}|${f.keyword}|${f.analyzedOnly}`
+}
+
+function feedQuery(page, pageSize) {
+  const query = new URLSearchParams({
+    page: String(page),
+    pageSize: String(pageSize),
+    // 随机是纯前端的顺序，服务端只需要给一份稳定、可翻页的顺序，所以这里回落发布时间
+    sort: state.feedSort === 'random' ? 'create_time' : state.feedSort
+  })
+  if (state.filters.secUid) query.set('secUid', state.filters.secUid)
+  if (state.filters.keyword) query.set('keyword', state.filters.keyword)
+  if (state.filters.analyzedOnly) query.set('analyzedOnly', 'true')
+  return query
+}
+
+function shuffle(items) {
+  const out = items.slice()
+  for (let i = out.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1))
+    const tmp = out[i]
+    out[i] = out[j]
+    out[j] = tmp
+  }
+  return out
+}
+
+/** 抓全库并按 id 去重、洗牌。返回 null 表示这批请求已过期（用户中途换了筛选或作者页） */
+async function fetchWholeLibrary(seq, epoch) {
+  const stale = () => seq !== state.loadSeq || epoch !== state.feedEpoch
+
+  const first = await fetchJson(`/api/feed?${feedQuery(1, FETCH_ALL_PAGE_SIZE)}`)
+  if (stale()) return null
+  state.authors = first.authors || []
+  state.total = first.total || 0
+
+  const collected = Array.isArray(first.posts) ? first.posts.slice() : []
+  // 用服务端回传的页大小算总页数，别把它的上限写死在这
+  const pageSize = first.pageSize || FETCH_ALL_PAGE_SIZE
+  const pageCount = Math.ceil(state.total / pageSize)
+
+  for (let start = 2; start <= pageCount; start += FETCH_CONCURRENCY) {
+    const pages = []
+    for (let p = start; p < start + FETCH_CONCURRENCY && p <= pageCount; p += 1) pages.push(p)
+    const batch = await Promise.all(
+      pages.map((p) => fetchJson(`/api/feed?${feedQuery(p, pageSize)}`))
+    )
+    if (stale()) return null
+    for (const result of batch) {
+      if (Array.isArray(result.posts)) collected.push(...result.posts)
+    }
+  }
+
+  const byId = new Map()
+  for (const post of collected) byId.set(post.id, post)
+  return shuffle(Array.from(byId.values()))
+}
+
+/** 从洗好的牌堆里发下一批。发完就把 hasMore 关掉，播放器的懒加载据此自然收尾 */
+function revealFromPool() {
+  const batch = state.shufflePool.slice(state.shuffleCursor, state.shuffleCursor + state.pageSize)
+  state.shuffleCursor += batch.length
+  state.hasMore = state.shuffleCursor < state.shufflePool.length
+  return batch
+}
+
+/** 随机模式取下一批：首批要把全库拉下来洗牌，之后纯粹是从牌堆里发牌，不再发请求 */
+async function nextRandomBatch(reset, seq, epoch) {
+  if (!reset) return revealFromPool()
+
+  const key = currentFilterKey()
+  // 筛选条件没变就把上次洗好的牌堆接上，切走再切回来不用重拉也不用重洗
+  if (state.shufflePool.length > 0 && state.shuffleKey === key) {
+    state.shuffleCursor = 0
+    return revealFromPool()
+  }
+
+  const pool = await fetchWholeLibrary(seq, epoch)
+  if (pool === null) return null
+  state.shufflePool = pool
+  state.shuffleKey = key
+  state.shuffleCursor = 0
+  state.total = pool.length
+  return revealFromPool()
+}
+
 async function loadGrid(reset = false) {
   if (state.loading && !reset) return
   if (!reset && !state.hasMore) return
@@ -627,22 +736,21 @@ async function loadGrid(reset = false) {
   state.loading = true
   el.gridLoading.style.display = 'flex'
 
-  const query = new URLSearchParams({
-    page: String(state.page),
-    pageSize: String(state.pageSize)
-  })
-  if (state.filters.secUid) query.set('secUid', state.filters.secUid)
-  if (state.filters.keyword) query.set('keyword', state.filters.keyword)
-  if (state.filters.analyzedOnly) query.set('analyzedOnly', 'true')
-
   try {
-    const payload = await fetchJson(`/api/feed?${query}`)
-    if (seq !== state.loadSeq || epoch !== state.feedEpoch) return
-    state.authors = payload.authors || []
-    state.total = payload.total || 0
-    state.hasMore = Boolean(payload.hasMore)
+    let incoming
+    if (state.feedSort === 'random') {
+      incoming = await nextRandomBatch(reset, seq, epoch)
+      if (incoming === null) return
+    } else {
+      const payload = await fetchJson(`/api/feed?${feedQuery(state.page, state.pageSize)}`)
+      if (seq !== state.loadSeq || epoch !== state.feedEpoch) return
+      state.authors = payload.authors || []
+      state.total = payload.total || 0
+      state.hasMore = Boolean(payload.hasMore)
+      incoming = Array.isArray(payload.posts) ? payload.posts : []
+      if (incoming.length > 0) state.page += 1
+    }
 
-    const incoming = Array.isArray(payload.posts) ? payload.posts : []
     const existingIds = new Set(state.posts.map((p) => p.id))
     const addedPosts = []
     if (reset) {
@@ -679,8 +787,6 @@ async function loadGrid(reset = false) {
         extendPlayer(addedPosts)
       }
     }
-
-    if (incoming.length > 0) state.page += 1
   } catch (err) {
     if (seq !== state.loadSeq) return
     if (reset) {
@@ -788,6 +894,9 @@ function storyHtml(post, index, total) {
         <button class="rail-button" type="button" data-action="mute" aria-label="静音">
           ${state.globalMuted ? icons.muted : icons.volume}
         </button>
+        <button class="rail-button${state.autoplayNext ? ' is-active' : ''}" type="button" data-action="autoplay" aria-label="自动连播" aria-pressed="${state.autoplayNext}">
+          ${icons.autoplay}
+        </button>
       </aside>
     </article>`
 }
@@ -808,7 +917,11 @@ function mountStoryMedia(story) {
   }
 
   const video = story.querySelector('.js-story-video')
-  if (video) bindVideoControls(story, video)
+  if (video) {
+    // 模板里写死了 loop，这里按当前开关覆盖：连播开着就得让视频真的能播完
+    video.loop = !state.autoplayNext
+    bindVideoControls(story, video)
+  }
 }
 
 function unmountStoryMedia(story) {
@@ -884,6 +997,10 @@ async function activateStory(story) {
 
   if (video) {
     video.muted = state.globalMuted
+    // 关掉 loop 后，往回滑到一条已播完的视频上时，play() 在部分浏览器不会自动
+    // 回到开头，而是立刻再抛一次 ended —— 那会把用户又弹到下一条，看起来像滑不回去。
+    // 手动归零消除这个歧义，同时让重看从头发起。
+    if (state.autoplayNext && video.ended) video.currentTime = 0
     try {
       await video.play()
     } catch {
@@ -917,6 +1034,52 @@ function syncMute() {
   el.playerFeed.querySelectorAll('[data-action="mute"]').forEach((btn) => {
     btn.innerHTML = state.globalMuted ? icons.muted : icons.volume
   })
+}
+
+/**
+ * 连播开关只有一个全局状态，但每条 story 各渲染了一个按钮，且媒体元素会被
+ * MEDIA_WINDOW 动态挂载/卸载 —— 所以切开关时既要点亮所有按钮，
+ * 也要同步已经挂载出来的 video.loop（新挂载的由 mountStoryMedia 负责）。
+ */
+function syncAutoplay() {
+  el.playerFeed.querySelectorAll('[data-action="autoplay"]').forEach((btn) => {
+    btn.classList.toggle('is-active', state.autoplayNext)
+    btn.setAttribute('aria-pressed', String(state.autoplayNext))
+  })
+  el.playerFeed.querySelectorAll('.js-story-video').forEach((video) => {
+    video.loop = !state.autoplayNext
+  })
+}
+
+/** 排序字段 → 文案。前两项必须和服务端 FEED_SORT_FIELDS 白名单一致，random 只在前端生效 */
+const SORT_LABELS = {
+  create_time: '发布时间',
+  downloaded_at: '下载时间',
+  random: '随机'
+}
+
+function syncSortToggle() {
+  const label = SORT_LABELS[state.feedSort] || SORT_LABELS.create_time
+  el.sortLabel.textContent = label
+  el.sortToggle.title = `当前按${label}排序，点击切换`
+  el.sortMenu.querySelectorAll('[data-sort]').forEach((option) => {
+    const active = option.dataset.sort === state.feedSort
+    option.classList.toggle('is-active', active)
+    option.setAttribute('aria-checked', String(active))
+  })
+}
+
+function closeSortMenu() {
+  el.sortMenu.hidden = true
+  el.sortToggle.classList.remove('is-open')
+  el.sortToggle.setAttribute('aria-expanded', 'false')
+}
+
+function toggleSortMenu() {
+  const open = el.sortMenu.hidden
+  el.sortMenu.hidden = !open
+  el.sortToggle.classList.toggle('is-open', open)
+  el.sortToggle.setAttribute('aria-expanded', String(open))
 }
 
 function updateImageStory(story, nextIndex) {
@@ -1019,6 +1182,12 @@ function bindStories() {
       void applyMuteToActive()
     })
 
+    story.querySelector('[data-action="autoplay"]')?.addEventListener('click', () => {
+      state.autoplayNext = !state.autoplayNext
+      syncAutoplay()
+      showToast(state.autoplayNext ? '自动连播已开启' : '自动连播已关闭')
+    })
+
     const authorEl = story.querySelector('.story-author[data-author-uid]')
     if (authorEl && authorEl.dataset.authorUid) {
       authorEl.addEventListener('click', (event) => {
@@ -1116,6 +1285,15 @@ function bindVideoControls(story, video) {
   video.addEventListener('durationchange', updateProgress)
   video.addEventListener('progress', updateBuffer)
   video.addEventListener('loadedmetadata', updateProgress)
+
+  // 连播：只有开关开着、且这条仍是当前条时才推进。
+  // 后半句是必需的 —— 用户在切换的那一瞬间手滑/回滑，旧 story 的 ended 可能晚到，
+  // 不挡住就会从一条已经翻过去的视频上再往前跳一格。
+  video.addEventListener('ended', () => {
+    if (!state.autoplayNext) return
+    if (Number(story.dataset.postId) !== state.activePostId) return
+    advanceToNextStory(story)
+  })
 
   video.addEventListener('error', () => {
     const now = Date.now()
@@ -1318,6 +1496,43 @@ function scrollToSiblingStory(delta) {
   if (target) target.scrollIntoView({ behavior: 'smooth' })
 }
 
+/**
+ * 播完进下一条。滚过去之后由 IntersectionObserver 接管（activateStory），
+ * 所以这里只负责「移动」。
+ *
+ * 末尾的两种情况要分开：还有下一页只是没渲染出来（hasMore）就边等边重试；
+ * 整库真的放完了就明确停住，不回卷到第 1 条 —— 竖屏 feed 从头再来一遍是负体验。
+ */
+function advanceToNextStory(story, attempt = 0) {
+  const stories = Array.from(el.playerFeed.querySelectorAll('.story'))
+  const idx = stories.indexOf(story)
+  const next = idx < 0 ? null : stories[idx + 1]
+  if (next) {
+    // 最小化、或被别的窗口完全遮挡时，浏览器把页面判为隐藏：平滑滚动是动画驱动的，这时不会
+    // 推进，IntersectionObserver 也就永远等不到下一条 —— 只能跳过滚动动画直接激活。
+    const background = document.hidden
+    next.scrollIntoView({ behavior: background ? 'instant' : 'smooth' })
+    if (background) void activateStory(next)
+    return
+  }
+
+  if (!state.hasMore) {
+    showToast('已是最后一条')
+    return
+  }
+
+  if (attempt === 0) void loadGrid(false)
+  // 约 3 秒还没等到新页就认了：期间状态每轮都重新看，加载到了就继续
+  if (attempt >= 8) {
+    showToast('已是最后一条')
+    return
+  }
+  setTimeout(() => {
+    if (Number(story.dataset.postId) !== state.activePostId) return
+    advanceToNextStory(story, attempt + 1)
+  }, 400)
+}
+
 // 键盘的 ←/→：点按快进快退，长按 → 进 2 倍速、长按 ← 连续快退。
 // 长按用定时器判定而非按键重复事件 —— 按键重复的首次延迟取决于系统键盘设置，
 // 有的系统还能把按键重复整个关掉，那样长按就永远进不了倍速。
@@ -1482,10 +1697,34 @@ el.analyzedToggle.addEventListener('click', () => {
   loadGrid(true)
 })
 
+el.sortToggle.addEventListener('click', (event) => {
+  event.stopPropagation()
+  toggleSortMenu()
+})
+
+el.sortMenu.addEventListener('click', (event) => {
+  const option = event.target.closest('[data-sort]')
+  if (!option) return
+  event.stopPropagation()
+  closeSortMenu()
+  if (option.dataset.sort === state.feedSort) return
+  state.feedSort = option.dataset.sort
+  syncSortToggle()
+  el.grid.scrollTop = 0
+  loadGrid(true)
+})
+
+document.addEventListener('click', closeSortMenu)
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeSortMenu()
+})
+el.grid.addEventListener('scroll', closeSortMenu)
+
 // ── Bootstrap ──
 
 async function bootstrap() {
   el.gridLoading.style.display = 'flex'
+  syncSortToggle()
   try {
     const [, tags] = await Promise.all([fetchJson('/api/info'), fetchJson('/api/tags')])
     state.tags = tags.tags || []
