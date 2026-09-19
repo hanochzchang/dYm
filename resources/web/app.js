@@ -7,14 +7,16 @@ const state = {
   total: 0,
   hasMore: true,
   loading: false,
-  globalMuted: true,
+  globalMuted: false,
   autoplayNext: false,
+  immersiveAudio: false,
   feedSort: 'create_time',
   randomSeed: 0,
   activePostId: null,
   playerPosts: [],
   playerStartIndex: 0,
   imageAutoTimer: null,
+  imageEndTimer: null,
   imageManualOverride: new Set(),
   author: null,
   authorPage: false,
@@ -35,6 +37,8 @@ const state = {
 }
 
 const IMAGE_AUTO_INTERVAL = 3000
+/** 单图帖没有幻灯可轮，默认模式下拿它当兜底停留时长；有音乐时以音乐时长为准 */
+const IMAGE_SINGLE_DWELL = 5000
 const MEDIA_WINDOW = 3
 const MEDIA_UNMOUNT_MARGIN = 2
 
@@ -74,7 +78,9 @@ const icons = {
   close:
     '<svg viewBox="0 0 24 24"><path fill="currentColor" d="m12 10.6 5-5 1.4 1.4-5 5 5 5-1.4 1.4-5-5-5 5L5.6 17l5-5-5-5L7 5.6l5 5Z"/></svg>',
   autoplay:
-    '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 18l8.5-6L6 6v12ZM16 6v12h2.5V6H16Z"/></svg>'
+    '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 18l8.5-6L6 6v12ZM16 6v12h2.5V6H16Z"/></svg>',
+  musicNote:
+    '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6Z"/></svg>'
 }
 
 function esc(value) {
@@ -813,6 +819,13 @@ function storyHtml(post, index, total) {
         <button class="rail-button${state.autoplayNext ? ' is-active' : ''}" type="button" data-action="autoplay" aria-label="自动连播" aria-pressed="${state.autoplayNext}">
           ${icons.autoplay}
         </button>
+        ${
+          post.media?.type === 'images'
+            ? `<button class="rail-button${state.immersiveAudio ? ' is-active' : ''}" type="button" data-action="immersive" aria-label="沉浸听歌" aria-pressed="${state.immersiveAudio}">
+          ${icons.musicNote}
+        </button>`
+            : ''
+        }
       </aside>
     </article>`
 }
@@ -830,6 +843,7 @@ function mountStoryMedia(story) {
   if (story.dataset.type === 'images') {
     const idx = Number(story.dataset.imageIndex || 0)
     if (idx > 0) updateImageStory(story, idx)
+    syncAudioLoop(story)
   }
 
   const video = story.querySelector('.js-story-video')
@@ -889,11 +903,69 @@ function startImageAutoTimer(story) {
   }, IMAGE_AUTO_INTERVAL)
 }
 
+function clearImageEndTimer() {
+  if (state.imageEndTimer) {
+    clearTimeout(state.imageEndTimer)
+    state.imageEndTimer = null
+  }
+}
+
+/** 沉浸模式要让音乐循环到一轮结束；默认模式的单图帖反过来要停掉 loop —— 否则翻页被拖住时音乐会重头再来一遍 */
+function syncAudioLoop(story) {
+  const audio = story.querySelector('.js-story-audio')
+  if (!audio) return
+  audio.loop = state.immersiveAudio || Number(story.dataset.imageCount || 0) > 1
+}
+
+/**
+ * 图文的「什么时候翻下一条」。三种规则统一成一个 deadline：
+ *   默认 + 多图：走完一轮（张数 × 3 秒），音乐被切断
+ *   默认 + 单图：等音乐放完，没音乐就停 IMAGE_SINGLE_DWELL
+ *   沉浸听歌：音乐循环到凑够一轮为止（⌈一轮 ÷ 音乐⌉ × 音乐）
+ *
+ * deadline 只需要 audio.duration 这个元数据，不依赖音乐真的在播 —— 所以静音、
+ * 被浏览器自动播放策略拦掉，都不影响计时（视频那条 ended 路径就没这个便利）。
+ */
+function scheduleImageStoryEnd(story) {
+  clearImageEndTimer()
+  if (story.dataset.type !== 'images') return
+  if (!state.autoplayNext && !state.immersiveAudio) return
+  const postId = Number(story.dataset.postId)
+  if (postId !== state.activePostId) return
+  if (state.imageManualOverride.has(postId)) return
+
+  const count = Number(story.dataset.imageCount || 0)
+  const audio = story.querySelector('.js-story-audio')
+  const cycle = count > 1 ? count * IMAGE_AUTO_INTERVAL : IMAGE_SINGLE_DWELL
+  const song = audio && Number.isFinite(audio.duration) ? audio.duration * 1000 : 0
+
+  let total = cycle
+  if (state.immersiveAudio) total = song > 0 ? Math.ceil(cycle / song) * song : cycle
+  else if (count <= 1) total = song > 0 ? song : cycle
+
+  // 元数据还没到时先按 cycle 兜底，加载到了再按实际时长重排一次
+  if (song === 0 && audio) {
+    audio.addEventListener(
+      'loadedmetadata',
+      () => {
+        if (Number(story.dataset.postId) === state.activePostId) scheduleImageStoryEnd(story)
+      },
+      { once: true }
+    )
+  }
+
+  state.imageEndTimer = setTimeout(() => {
+    if (Number(story.dataset.postId) !== state.activePostId) return
+    advanceToNextStory(story)
+  }, total)
+}
+
 function pauseAll() {
   el.playerFeed.querySelectorAll('.js-story-video').forEach((v) => v.pause())
   el.playerFeed.querySelectorAll('.js-gallery-video').forEach((v) => v.pause())
   el.playerFeed.querySelectorAll('.js-story-audio').forEach((a) => a.pause())
   clearImageAutoTimer()
+  clearImageEndTimer()
 }
 
 async function activateStory(story) {
@@ -943,6 +1015,7 @@ async function activateStory(story) {
       firstGalleryVideo.play().catch(() => {})
     }
     startImageAutoTimer(story)
+    scheduleImageStoryEnd(story)
   }
 }
 
@@ -965,6 +1038,25 @@ function syncAutoplay() {
   el.playerFeed.querySelectorAll('.js-story-video').forEach((video) => {
     video.loop = !state.autoplayNext
   })
+}
+
+/**
+ * 沉浸听歌同样只有一个全局状态、每条 story 各一个按钮，所以跟 syncAutoplay 一样
+ * 要批量点亮。区别是它改的是图文的 deadline 和 audio.loop，得把已挂载的都同步一遍。
+ */
+function syncImmersive() {
+  el.playerFeed.querySelectorAll('[data-action="immersive"]').forEach((btn) => {
+    btn.classList.toggle('is-active', state.immersiveAudio)
+    btn.setAttribute('aria-pressed', String(state.immersiveAudio))
+  })
+  el.playerFeed.querySelectorAll('.story[data-type="images"]').forEach((story) => {
+    syncAudioLoop(story)
+  })
+  const active =
+    state.activePostId != null
+      ? el.playerFeed.querySelector(`.story[data-post-id="${state.activePostId}"]`)
+      : null
+  if (active) scheduleImageStoryEnd(active)
 }
 
 /** 排序字段 → 文案。三项都要和服务端 FEED_SORT_FIELDS 白名单一致 */
@@ -1079,6 +1171,7 @@ function bindStories() {
         const postId = Number(story.dataset.postId)
         state.imageManualOverride.add(postId)
         clearImageAutoTimer()
+        clearImageEndTimer()
         updateImageStory(story, Number(story.dataset.imageIndex || 0) + delta)
       })
     })
@@ -1088,6 +1181,7 @@ function bindStories() {
         const postId = Number(story.dataset.postId)
         state.imageManualOverride.add(postId)
         clearImageAutoTimer()
+        clearImageEndTimer()
         updateImageStory(story, Number(dot.dataset.dotIndex || 0))
       })
     })
@@ -1102,6 +1196,12 @@ function bindStories() {
       state.autoplayNext = !state.autoplayNext
       syncAutoplay()
       showToast(state.autoplayNext ? '自动连播已开启' : '自动连播已关闭')
+    })
+
+    story.querySelector('[data-action="immersive"]')?.addEventListener('click', () => {
+      state.immersiveAudio = !state.immersiveAudio
+      syncImmersive()
+      showToast(state.immersiveAudio ? '沉浸听歌已开启' : '沉浸听歌已关闭')
     })
 
     const authorEl = story.querySelector('.story-author[data-author-uid]')
@@ -1558,6 +1658,7 @@ document.addEventListener('keydown', (event) => {
       const delta = event.key === 'ArrowRight' ? 1 : -1
       state.imageManualOverride.add(Number(activeStory.dataset.postId))
       clearImageAutoTimer()
+      clearImageEndTimer()
       updateImageStory(activeStory, Number(activeStory.dataset.imageIndex || 0) + delta)
       return
     }
