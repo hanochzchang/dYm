@@ -10,9 +10,7 @@ const state = {
   globalMuted: true,
   autoplayNext: false,
   feedSort: 'create_time',
-  shufflePool: [],
-  shuffleCursor: 0,
-  shuffleKey: '',
+  randomSeed: 0,
   activePostId: null,
   playerPosts: [],
   playerStartIndex: 0,
@@ -151,9 +149,7 @@ function captureBrowseSnapshot() {
     page: state.page,
     total: state.total,
     hasMore: state.hasMore,
-    shufflePool: state.shufflePool,
-    shuffleCursor: state.shuffleCursor,
-    shuffleKey: state.shuffleKey,
+    randomSeed: state.randomSeed,
     authors: state.authors.slice(),
     filters: { ...state.filters },
     searchValue: el.searchInput.value,
@@ -172,9 +168,7 @@ function restoreBrowseSnapshot(snap) {
   state.page = snap.page
   state.total = snap.total
   state.hasMore = snap.hasMore
-  state.shufflePool = snap.shufflePool
-  state.shuffleCursor = snap.shuffleCursor
-  state.shuffleKey = snap.shuffleKey
+  state.randomSeed = snap.randomSeed
   state.authors = snap.authors
   state.filters = { ...snap.filters }
   el.searchInput.value = snap.searchValue
@@ -626,97 +620,23 @@ function bindGridItems() {
   })
 }
 
-/** 随机模式抓全库时的页大小：故意开得比服务端上限大，让服务端自己夹到它的上限 */
-const FETCH_ALL_PAGE_SIZE = 999
-/** 抓全库的并发批大小，避免上百个请求同时打过去 */
-const FETCH_CONCURRENCY = 8
-
-function currentFilterKey() {
-  const f = state.filters
-  return `${f.secUid}|${f.keyword}|${f.analyzedOnly}`
+/** 重掷洗牌种子。换筛选、换排序、刷新页面都会调用一次；服务端在同一个种子下的顺序是恒定的，
+ *  所以翻页既不重复也不遗漏，不像纯前端洗牌那样要把全库拉下来才敢发牌 */
+function rerollRandomSeed() {
+  state.randomSeed = Math.floor(Math.random() * 2147483647)
 }
 
 function feedQuery(page, pageSize) {
   const query = new URLSearchParams({
     page: String(page),
     pageSize: String(pageSize),
-    // 随机是纯前端的顺序，服务端只需要给一份稳定、可翻页的顺序，所以这里回落发布时间
-    sort: state.feedSort === 'random' ? 'create_time' : state.feedSort
+    sort: state.feedSort
   })
+  if (state.feedSort === 'random') query.set('seed', String(state.randomSeed))
   if (state.filters.secUid) query.set('secUid', state.filters.secUid)
   if (state.filters.keyword) query.set('keyword', state.filters.keyword)
   if (state.filters.analyzedOnly) query.set('analyzedOnly', 'true')
   return query
-}
-
-function shuffle(items) {
-  const out = items.slice()
-  for (let i = out.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1))
-    const tmp = out[i]
-    out[i] = out[j]
-    out[j] = tmp
-  }
-  return out
-}
-
-/** 抓全库并按 id 去重、洗牌。返回 null 表示这批请求已过期（用户中途换了筛选或作者页） */
-async function fetchWholeLibrary(seq, epoch) {
-  const stale = () => seq !== state.loadSeq || epoch !== state.feedEpoch
-
-  const first = await fetchJson(`/api/feed?${feedQuery(1, FETCH_ALL_PAGE_SIZE)}`)
-  if (stale()) return null
-  state.authors = first.authors || []
-  state.total = first.total || 0
-
-  const collected = Array.isArray(first.posts) ? first.posts.slice() : []
-  // 用服务端回传的页大小算总页数，别把它的上限写死在这
-  const pageSize = first.pageSize || FETCH_ALL_PAGE_SIZE
-  const pageCount = Math.ceil(state.total / pageSize)
-
-  for (let start = 2; start <= pageCount; start += FETCH_CONCURRENCY) {
-    const pages = []
-    for (let p = start; p < start + FETCH_CONCURRENCY && p <= pageCount; p += 1) pages.push(p)
-    const batch = await Promise.all(
-      pages.map((p) => fetchJson(`/api/feed?${feedQuery(p, pageSize)}`))
-    )
-    if (stale()) return null
-    for (const result of batch) {
-      if (Array.isArray(result.posts)) collected.push(...result.posts)
-    }
-  }
-
-  const byId = new Map()
-  for (const post of collected) byId.set(post.id, post)
-  return shuffle(Array.from(byId.values()))
-}
-
-/** 从洗好的牌堆里发下一批。发完就把 hasMore 关掉，播放器的懒加载据此自然收尾 */
-function revealFromPool() {
-  const batch = state.shufflePool.slice(state.shuffleCursor, state.shuffleCursor + state.pageSize)
-  state.shuffleCursor += batch.length
-  state.hasMore = state.shuffleCursor < state.shufflePool.length
-  return batch
-}
-
-/** 随机模式取下一批：首批要把全库拉下来洗牌，之后纯粹是从牌堆里发牌，不再发请求 */
-async function nextRandomBatch(reset, seq, epoch) {
-  if (!reset) return revealFromPool()
-
-  const key = currentFilterKey()
-  // 筛选条件没变就把上次洗好的牌堆接上，切走再切回来不用重拉也不用重洗
-  if (state.shufflePool.length > 0 && state.shuffleKey === key) {
-    state.shuffleCursor = 0
-    return revealFromPool()
-  }
-
-  const pool = await fetchWholeLibrary(seq, epoch)
-  if (pool === null) return null
-  state.shufflePool = pool
-  state.shuffleKey = key
-  state.shuffleCursor = 0
-  state.total = pool.length
-  return revealFromPool()
 }
 
 async function loadGrid(reset = false) {
@@ -727,6 +647,8 @@ async function loadGrid(reset = false) {
   const epoch = reset ? invalidateFeed() : state.feedEpoch
 
   if (reset) {
+    // 重来一次就重新洗牌（换筛选/换排序/刷新）
+    if (state.feedSort === 'random') rerollRandomSeed()
     state.page = 1
     state.posts = []
     state.hasMore = true
@@ -737,19 +659,13 @@ async function loadGrid(reset = false) {
   el.gridLoading.style.display = 'flex'
 
   try {
-    let incoming
-    if (state.feedSort === 'random') {
-      incoming = await nextRandomBatch(reset, seq, epoch)
-      if (incoming === null) return
-    } else {
-      const payload = await fetchJson(`/api/feed?${feedQuery(state.page, state.pageSize)}`)
-      if (seq !== state.loadSeq || epoch !== state.feedEpoch) return
-      state.authors = payload.authors || []
-      state.total = payload.total || 0
-      state.hasMore = Boolean(payload.hasMore)
-      incoming = Array.isArray(payload.posts) ? payload.posts : []
-      if (incoming.length > 0) state.page += 1
-    }
+    const payload = await fetchJson(`/api/feed?${feedQuery(state.page, state.pageSize)}`)
+    if (seq !== state.loadSeq || epoch !== state.feedEpoch) return
+    state.authors = payload.authors || []
+    state.total = payload.total || 0
+    state.hasMore = Boolean(payload.hasMore)
+    const incoming = Array.isArray(payload.posts) ? payload.posts : []
+    if (incoming.length > 0) state.page += 1
 
     const existingIds = new Set(state.posts.map((p) => p.id))
     const addedPosts = []
@@ -1051,7 +967,7 @@ function syncAutoplay() {
   })
 }
 
-/** 排序字段 → 文案。前两项必须和服务端 FEED_SORT_FIELDS 白名单一致，random 只在前端生效 */
+/** 排序字段 → 文案。三项都要和服务端 FEED_SORT_FIELDS 白名单一致 */
 const SORT_LABELS = {
   create_time: '发布时间',
   downloaded_at: '下载时间',

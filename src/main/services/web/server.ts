@@ -217,8 +217,8 @@ function buildFeedFilters(url: URL): PostFilters {
   }
 }
 
-/** 网页端只放行这两项排序，认不出的值一律回落发布时间。用 Set 而非对象查表：后者 `__proto__` 之类的键会命中原型链 */
-const FEED_SORT_FIELDS = new Set<string>(['create_time', 'downloaded_at'])
+/** 网页端只放行这些排序，认不出的值一律回落发布时间。用 Set 而非对象查表：后者 `__proto__` 之类的键会命中原型链 */
+const FEED_SORT_FIELDS = new Set<string>(['create_time', 'downloaded_at', 'random'])
 
 function parseSortField(value: string | null): PostSortField {
   return value && FEED_SORT_FIELDS.has(value) ? (value as PostSortField) : 'create_time'
@@ -572,7 +572,9 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     const filters = buildFeedFilters(url)
     const result = getAllPosts(page, pageSize, filters, {
       field: parseSortField(url.searchParams.get('sort')),
-      order: 'DESC'
+      order: 'DESC',
+      // 只对 random 有意义：同一 seed 翻页顺序不变，换了 seed 就重洗
+      seed: parseInteger(url.searchParams.get('seed'), 0, { min: 0, max: 2147483647 })
     })
     respondJson(response, 200, {
       page,

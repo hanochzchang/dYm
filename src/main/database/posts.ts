@@ -183,47 +183,74 @@ export type PostSortField =
   | 'downloaded_at'
   | 'analyzed_at'
   | 'analysis_content_level'
+  | 'random'
 
 export interface PostSortConfig {
   field: PostSortField
   order: 'ASC' | 'DESC'
+  /** field 为 random 时的洗牌种子；同一个种子翻页顺序恒定，换种子即重洗 */
+  seed?: number
 }
 
+type SortableField = Exclude<PostSortField, 'random'>
+
 // 白名单映射，避免 ORDER BY 注入
-const SORT_COLUMNS: Record<PostSortField, string> = {
+const SORT_COLUMNS: Record<SortableField, string> = {
   create_time: 'create_time',
   downloaded_at: 'downloaded_at',
   analyzed_at: 'analyzed_at',
   analysis_content_level: 'analysis_content_level'
 }
 
-function buildOrderBy(sort?: PostSortConfig): string {
-  const column = sort && SORT_COLUMNS[sort.field] ? SORT_COLUMNS[sort.field] : 'create_time'
-  const order = sort?.order === 'ASC' ? 'ASC' : 'DESC'
-  // NULL 值始终排在最后，避免未分析作品挤占头部
-  return `ORDER BY ${column} ${order} NULLS LAST`
+// 认不出的字段一律回落发布时间。random 不走这里（它在 JS 里洗牌），
+// 但运行期混进来的脏值也必须被挡住，所以查表结果为空就回落。
+function sortColumn(field?: PostSortField): string {
+  if (!field || field === 'random') return 'create_time'
+  return SORT_COLUMNS[field] || 'create_time'
 }
 
-export function getAllPosts(
-  page: number = 1,
-  pageSize: number = 20,
-  filters?: PostFilters,
-  sort?: PostSortConfig
-): { posts: DbPost[]; total: number; authors: PostAuthor[] } {
-  const database = getDatabase()
-  const offset = (page - 1) * pageSize
+function buildOrderBy(sort?: PostSortConfig): string {
+  const order = sort?.order === 'ASC' ? 'ASC' : 'DESC'
+  // NULL 值始终排在最后，避免未分析作品挤占头部
+  return `ORDER BY ${sortColumn(sort?.field)} ${order} NULLS LAST`
+}
 
-  const hasVisible = database
-    .prepare('SELECT 1 AS ok FROM users WHERE show_in_home = 1 LIMIT 1')
-    .get() as { ok: number } | undefined
-  if (!hasVisible) {
-    return { posts: [], total: 0, authors: [] }
+/**
+ * 可播种的 PRNG（mulberry32）：同一个 seed 给出的序列完全相同，
+ * 随机序翻页要靠这个才稳定 —— Math.random() 每次都不一样。
+ */
+function mulberry32(seed: number): () => number {
+  let state = seed >>> 0
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0
+    let t = Math.imul(state ^ (state >>> 15), 1 | state)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
   }
+}
 
-  // 下拉以 users 当前昵称为准、一人一条。posts.nickname 是下载时的快照，
-  // 用户改名后同一 sec_uid 会冒出多个名字，DISTINCT(sec_uid, nickname)
-  // 会让筛选列表重复，find() 还可能显示成改名前的名字。
-  const authors = database
+/** 就地做一次 Fisher-Yates，与网页端原来的洗牌算法同款 */
+function shuffleIds(ids: number[], seed: number): void {
+  const random = mulberry32(seed)
+  for (let i = ids.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(random() * (i + 1))
+    const tmp = ids[i]
+    ids[i] = ids[j]
+    ids[j] = tmp
+  }
+}
+
+function hasVisibleUsers(): boolean {
+  return Boolean(
+    getDatabase().prepare('SELECT 1 AS ok FROM users WHERE show_in_home = 1 LIMIT 1').get()
+  )
+}
+
+// 下拉以 users 当前昵称为准、一人一条。posts.nickname 是下载时的快照，
+// 用户改名后同一 sec_uid 会冒出多个名字，DISTINCT(sec_uid, nickname)
+// 会让筛选列表重复，find() 还可能显示成改名前的名字。
+function listVisibleAuthors(): PostAuthor[] {
+  return getDatabase()
     .prepare(
       `SELECT u.sec_uid, u.nickname
        FROM users u
@@ -234,11 +261,12 @@ export function getAllPosts(
        ORDER BY u.nickname`
     )
     .all() as PostAuthor[]
-  const nameBySec = new Map(authors.map((a) => [a.sec_uid, a.nickname]))
+}
 
-  // 构建查询（子查询代替把全部 sec_uid 展开成 IN (?,?,…)，可见用户上千时会顶变量上限）。
-  // 一元 + 让规划器不要用 idx_posts_sec_uid 再全表临时排序，而是沿排序列索引扫到 LIMIT 即停：
-  // 3 万条时首页从 ~11ms 降到 <1ms
+// 构建查询（子查询代替把全部 sec_uid 展开成 IN (?,?,…)，可见用户上千时会顶变量上限）。
+// 一元 + 让规划器不要用 idx_posts_sec_uid 再全表临时排序，而是沿排序列索引扫到 LIMIT 即停：
+// 3 万条时首页从 ~11ms 降到 <1ms
+function buildPostWhere(filters?: PostFilters): { whereClause: string; params: unknown[] } {
   const conditions: string[] = [`+sec_uid IN (SELECT sec_uid FROM users WHERE show_in_home = 1)`]
   const params: unknown[] = []
 
@@ -279,7 +307,79 @@ export function getAllPosts(
     )
   }
 
-  const whereClause = `WHERE ${conditions.join(' AND ')}`
+  return { whereClause: `WHERE ${conditions.join(' AND ')}`, params }
+}
+
+/**
+ * 随机序。SQL 里没有可播种的哈希，纯 ORDER BY RANDOM() 又是每查一次重掷一次，
+ * OFFSET 翻页必然重复+漏行；所以在 JS 里按 seed 洗一遍过滤后的 id 列表。
+ * 顺序只由 (seed, 过滤结果) 决定 —— 同一 seed 下第 N 页永远落在同一段，
+ * 不用缓存整副牌，也不会随请求次数漂移。
+ */
+function getRandomPosts(
+  page: number,
+  pageSize: number,
+  filters: PostFilters | undefined,
+  rawSeed: number | undefined
+): { posts: DbPost[]; total: number; authors: PostAuthor[] } {
+  const database = getDatabase()
+  const { whereClause, params } = buildPostWhere(filters)
+  const authors = listVisibleAuthors()
+  const nameBySec = new Map(authors.map((a) => [a.sec_uid, a.nickname]))
+
+  const ids = (
+    database
+      .prepare(`SELECT id FROM posts ${whereClause} ORDER BY id`)
+      .all(...params) as { id: number }[]
+  ).map((row) => row.id)
+
+  const seed = Number.isSafeInteger(rawSeed) ? Math.abs(rawSeed as number) : 0
+  shuffleIds(ids, seed)
+
+  const offset = (page - 1) * pageSize
+  const window = ids.slice(offset, offset + pageSize)
+  if (window.length === 0) return { posts: [], total: ids.length, authors }
+
+  // IN 不带顺序，按洗好的 window 重新排一遍
+  const placeholders = window.map(() => '?').join(',')
+  const rows = database
+    .prepare(`SELECT * FROM posts WHERE id IN (${placeholders})`)
+    .all(...window) as DbPost[]
+  const byId = new Map(rows.map((row) => [row.id, row]))
+
+  const posts: DbPost[] = []
+  for (const id of window) {
+    const post = byId.get(id)
+    if (!post) continue
+    const current = nameBySec.get(post.sec_uid)
+    posts.push(!current || current === post.nickname ? post : { ...post, nickname: current })
+  }
+
+  return { posts, total: ids.length, authors }
+}
+
+export function getAllPosts(
+  page: number = 1,
+  pageSize: number = 20,
+  filters?: PostFilters,
+  sort?: PostSortConfig
+): { posts: DbPost[]; total: number; authors: PostAuthor[] } {
+  // 随机序要在 JS 里洗牌，走另一条路径
+  if (sort?.field === 'random') {
+    return getRandomPosts(page, pageSize, filters, sort.seed)
+  }
+
+  const database = getDatabase()
+  const offset = (page - 1) * pageSize
+
+  if (!hasVisibleUsers()) {
+    return { posts: [], total: 0, authors: [] }
+  }
+
+  const authors = listVisibleAuthors()
+  const nameBySec = new Map(authors.map((a) => [a.sec_uid, a.nickname]))
+
+  const { whereClause, params } = buildPostWhere(filters)
 
   const rows = database
     .prepare(`SELECT * FROM posts ${whereClause} ${buildOrderBy(sort)} LIMIT ? OFFSET ?`)
