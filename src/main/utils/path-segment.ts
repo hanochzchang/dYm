@@ -3,27 +3,30 @@
  * 空串会让 join(root, '') 退化成下载根目录，'..' 会跑到上一级；进入口先把它们挡住。
  */
 
-// 抖音 sec_uid 仅含字母/数字/下划线/连字符
-const SEC_UID_PATTERN = /^[A-Za-z0-9_-]+$/
-
-export function assertSecUid(secUid: unknown): string {
-  if (typeof secUid !== 'string' || !SEC_UID_PATTERN.test(secUid)) {
-    throw new Error(`非法的 sec_uid：${String(secUid)}`)
+/** 单级目录名：不能为空、不能含路径分隔符、不能是 . / .. */
+function assertSegment(value: unknown, label: string): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value === '.' ||
+    value === '..' ||
+    /[\\/]/.test(value) ||
+    value.includes('\0')
+  ) {
+    throw new Error(`非法的${label}：${String(value)}`)
   }
-  return secUid
+  return value
 }
 
-/** 单级目录名：不能为空、不能含路径分隔符、不能是 . / .. */
+/**
+ * sec_uid 也是当目录名用的。真实抖音的是 `MS4wLjABAAAA…`（纯 ASCII），但「本地导入」
+ * 造的合成作者会把作者名直接写进去（可能含中文），所以只能按「合法的单级目录名」判，
+ * 不能再拿抖音的字符集卡——否则导入的作品一右键「在文件管理器中打开」就报非法。
+ */
+export function assertSecUid(secUid: unknown): string {
+  return assertSegment(secUid, 'sec_uid')
+}
+
 export function assertFolderName(name: unknown): string {
-  if (
-    typeof name !== 'string' ||
-    name.length === 0 ||
-    name === '.' ||
-    name === '..' ||
-    /[\\/]/.test(name) ||
-    name.includes('\0')
-  ) {
-    throw new Error(`非法的目录名：${String(name)}`)
-  }
-  return name
+  return assertSegment(name, '目录名')
 }

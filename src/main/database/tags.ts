@@ -560,7 +560,7 @@ const TAG_SORT_SQL: Record<TagPostSort, string> = {
   downloaded: 'downloaded_at DESC',
   published: 'create_time DESC',
   analyzed: 'analyzed_at DESC',
-  level: 'analysis_content_level DESC'
+  level: 'COALESCE(manual_content_level, analysis_content_level) DESC'
 }
 
 export interface TagPostFilters {
@@ -648,12 +648,13 @@ function buildTagWhere(
   }
 
   if (!skip.has('level')) {
+    // 等级区间看的是生效值：手动分压过 AI 分
     if (filters?.minLevel !== undefined) {
-      conditions.push('analysis_content_level >= ?')
+      conditions.push('COALESCE(manual_content_level, analysis_content_level) >= ?')
       params.push(filters.minLevel)
     }
     if (filters?.maxLevel !== undefined) {
-      conditions.push('analysis_content_level <= ?')
+      conditions.push('COALESCE(manual_content_level, analysis_content_level) <= ?')
       params.push(filters.maxLevel)
     }
   }

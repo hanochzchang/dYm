@@ -269,7 +269,7 @@ export default function VideoTagEditPage(): React.JSX.Element {
       />
 
       <div className="flex-1 overflow-y-auto p-6">
-        <div className="flex gap-8 max-w-5xl">
+        <div className="mx-auto flex gap-8 max-w-5xl">
           {/* Left: preview */}
           <div className="w-80 shrink-0 space-y-4">
             <div
@@ -332,6 +332,9 @@ export default function VideoTagEditPage(): React.JSX.Element {
               postId={id}
               refreshKey={detailKey}
               fallbackSummary={post.analysis_summary}
+              manualLevel={post.manual_content_level}
+              onLevelChange={load}
+              onAnalysisChange={load}
             />
 
             {/* Add + suggestions */}

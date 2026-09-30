@@ -15,9 +15,11 @@ import {
   ChevronDown,
   ChevronUp,
   RefreshCw,
+  Star,
   TagIcon,
   Tags,
-  UserSearch
+  UserSearch,
+  Upload
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -31,11 +33,13 @@ import {
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
 import { MediaViewer } from '@/components/media/MediaViewer'
-import { VideoDownloadDialog } from '@/components/media/VideoDownloadDialog'
+import { LocalImportDialog } from '@/components/media/LocalImportDialog'
 import { SortSelect } from '@/components/common/SortSelect'
+import { isLocalAwemeId } from '@shared/local-post'
 import { getInitialSort } from '@/lib/post-sort'
 import { getMergedTags } from '@/lib/utils'
 import { AddTagsDialog } from '@/pages/tags/AddTagsDialog'
+import { SetContentLevelDialog } from '@/pages/tags/SetContentLevelDialog'
 import { formatPostDate } from '@/lib/format'
 
 const IMAGE_AWEME_TYPE = 68
@@ -43,12 +47,36 @@ const PAGE_SIZE = 50
 
 const isImagePost = (post: DbPost): boolean => post.aweme_type === IMAGE_AWEME_TYPE
 
+/** 从「全部作品」点进某个作者时留的底：整份列表状态，退出作者筛选时原样放回 */
+interface ListSnapshot {
+  /** 除作者以外的筛选条件 + 排序；和退出时的对不上就说明底子被改过，不能放回 */
+  key: string
+  posts: DbPost[]
+  page: number
+  total: number
+  hasMore: boolean
+  scrollTop: number
+}
+
+function listKeyWithoutSecUid(filters: PostFilters, sort: PostSortConfig): string {
+  return JSON.stringify([
+    filters.tags ?? null,
+    filters.minContentLevel ?? null,
+    filters.maxContentLevel ?? null,
+    filters.analyzedOnly ?? null,
+    filters.keyword ?? null,
+    sort.field,
+    sort.order
+  ])
+}
+
 interface PostCardProps {
   post: DbPost
   coverUrl: string | null
   onOpen: (post: DbPost) => void
   onAuthorClick: (secUid: string) => void
   onAddTags: (post: DbPost) => void
+  onSetLevel: (post: DbPost) => void
   onEditTags: (postId: number) => void
   onAuthorTags: (secUid: string) => void
 }
@@ -60,6 +88,7 @@ const PostCard = memo(function PostCard({
   onOpen,
   onAuthorClick,
   onAddTags,
+  onSetLevel,
   onEditTags,
   onAuthorTags
 }: PostCardProps): React.JSX.Element {
@@ -167,6 +196,10 @@ const PostCard = memo(function PostCard({
           <TagIcon className="h-4 w-4 mr-2" />
           添加标签
         </ContextMenuItem>
+        <ContextMenuItem onClick={() => onSetLevel(post)}>
+          <Star className="h-4 w-4 mr-2" />
+          设置内容等级
+        </ContextMenuItem>
         <ContextMenuItem onClick={() => onEditTags(post.id)}>
           <Tags className="h-4 w-4 mr-2" />
           在标签管理中编辑
@@ -180,10 +213,13 @@ const PostCard = memo(function PostCard({
           <FolderOpen className="h-4 w-4 mr-2" />
           在文件管理器中打开
         </ContextMenuItem>
-        <ContextMenuItem onClick={handleRedownload}>
-          <RefreshCw className="h-4 w-4 mr-2" />
-          重新下载
-        </ContextMenuItem>
+        {/* 导入的本地作品在抖音上不存在，重新下载只会删掉记录却拉不回来 */}
+        {!isLocalAwemeId(post.aweme_id) && (
+          <ContextMenuItem onClick={handleRedownload}>
+            <RefreshCw className="h-4 w-4 mr-2" />
+            重新下载
+          </ContextMenuItem>
+        )}
       </ContextMenuContent>
     </ContextMenu>
   )
@@ -193,6 +229,7 @@ export default function BrowsePage() {
   const navigate = useNavigate()
   // 右键「添加标签」的目标作品（null 表示弹窗关闭）
   const [tagTarget, setTagTarget] = useState<DbPost | null>(null)
+  const [levelTarget, setLevelTarget] = useState<DbPost | null>(null)
   const [posts, setPosts] = useState<DbPost[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -211,7 +248,7 @@ export default function BrowsePage() {
   const [analyzedOnly, setAnalyzedOnly] = useState(false)
   const [showAllTags, setShowAllTags] = useState(false)
   const [tagSearch, setTagSearch] = useState('')
-  const [downloadDialogOpen, setDownloadDialogOpen] = useState(false)
+  const [localImportOpen, setLocalImportOpen] = useState(false)
   const [searchKeyword, setSearchKeyword] = useState('')
   // 搜索词防抖后的副本：filters 只跟它走，避免每敲一个字就打一次全库 LIKE 查询
   const [debouncedKeyword, setDebouncedKeyword] = useState('')
@@ -224,6 +261,11 @@ export default function BrowsePage() {
   const authorSearchInputRef = useRef<HTMLInputElement>(null)
   // 列表请求序号。筛选切换很快时，慢的旧请求可能晚于新请求返回，用它丢弃过期结果
   const postsRequestSeq = useRef(0)
+  // 退出作者筛选要放回的那份列表状态（null = 没有底子）
+  const listSnapshotRef = useRef<ListSnapshot | null>(null)
+  // 待恢复的滚动位置。不能在换列表的那次 effect 里直接滚：那时 DOM 还是作者视图的
+  // 那份短列表，滚动条会被夹到顶部；等 posts 提交完再滚（见下面那个 effect）
+  const pendingScrollTopRef = useRef<number | null>(null)
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedKeyword(searchKeyword.trim()), 300)
@@ -242,8 +284,32 @@ export default function BrowsePage() {
     [selectedSecUid, selectedTags, sexyLevelRange, analyzedOnly, debouncedKeyword]
   )
 
+  // viewAuthorPosts 得读最新的列表状态才能留底，但把 posts/page 之类加进 useCallback
+  // 依赖会让它的引用每次都变，PostCard 的 memo 就全废了；用 ref 转发一份绕开
+  const listStateRef = useRef({ posts, page, total, hasMore, filters, sort })
+  useEffect(() => {
+    listStateRef.current = { posts, page, total, hasMore, filters, sort }
+  })
+
   useEffect(() => {
     localStorage.setItem('home_post_sort', JSON.stringify(sort))
+
+    // 退出作者筛选：底子没被改过就把刚才留的整份列表原样放回，
+    // 已加载的分页和滚动位置都还在，不用重新翻
+    const snapshot = listSnapshotRef.current
+    if (!filters.secUid && snapshot && snapshot.key === listKeyWithoutSecUid(filters, sort)) {
+      listSnapshotRef.current = null
+      // 作者视图那次请求可能还在路上，得让它的结果作废，否则会把放回的列表冲掉
+      postsRequestSeq.current++
+      setPosts(snapshot.posts)
+      setPage(snapshot.page)
+      setTotal(snapshot.total)
+      setHasMore(snapshot.hasMore)
+      setLoading(false)
+      pendingScrollTopRef.current = snapshot.scrollTop
+      return
+    }
+
     setPosts([])
     setPage(1)
     setHasMore(true)
@@ -258,6 +324,13 @@ export default function BrowsePage() {
     if (posts.length > 0) {
       loadCoverPaths(posts)
     }
+  }, [posts])
+
+  // 放回的列表已经提交到 DOM，这时候容器才有原来的高度，滚回去才不会被夹
+  useEffect(() => {
+    if (pendingScrollTopRef.current === null) return
+    gridScrollRef.current?.scrollTo({ top: pendingScrollTopRef.current })
+    pendingScrollTopRef.current = null
   }, [posts])
 
   useEffect(() => {
@@ -331,6 +404,17 @@ export default function BrowsePage() {
     }
   }
 
+  // 导入完成后从头重载：跟筛选/排序变化一样把分页状态一并归零，
+  // 否则翻过几页再导入时，哨兵会接着旧页码继续加载
+  const handleImported = (): void => {
+    // 留的底是导入前的列表，放回去会少掉刚导入的作品
+    listSnapshotRef.current = null
+    setPosts([])
+    setPage(1)
+    setHasMore(true)
+    loadPosts(1, true)
+  }
+
   const loadMore = useCallback(() => {
     const nextPage = page + 1
     setPage(nextPage)
@@ -386,6 +470,42 @@ export default function BrowsePage() {
     [navigate]
   )
 
+  /**
+   * 把「全部作品」这份列表留个底（含已加载的分页和滚动位置），退出作者筛选时放回去。
+   * 已经在看某个作者时不覆盖 —— 那份底子仍是全量列表那一份。
+   */
+  const rememberFullList = useCallback((): void => {
+    if (listStateRef.current.filters.secUid) return
+    const {
+      posts: current,
+      page: currentPage,
+      total: currentTotal,
+      hasMore,
+      filters: f,
+      sort: currentSort
+    } = listStateRef.current
+    listSnapshotRef.current = {
+      key: listKeyWithoutSecUid(f, currentSort),
+      posts: current,
+      page: currentPage,
+      total: currentTotal,
+      hasMore,
+      scrollTop: gridScrollRef.current?.scrollTop ?? 0
+    }
+  }, [])
+
+  // 点击作者名 —— 直接筛选出该作者的全部作品
+  const viewAuthorPosts = useCallback(
+    (secUid: string): void => {
+      setViewerOpen(false)
+      setShowAuthorDropdown(false)
+      rememberFullList()
+      setSelectedSecUid(secUid)
+      gridScrollRef.current?.scrollTo({ top: 0 })
+    },
+    [rememberFullList]
+  )
+
   // 加完标签只回填这一条，不重载列表 —— 否则已加载的分页和滚动位置都会丢
   const refreshPostTags = async (postId?: number): Promise<void> => {
     if (!postId) return
@@ -394,14 +514,6 @@ export default function BrowsePage() {
     setPosts((prev) => prev.map((p) => (p.id === postId ? fresh : p)))
     setSelectedPost((prev) => (prev?.id === postId ? fresh : prev))
   }
-
-  // 点击作者名 —— 直接筛选出该作者的全部作品
-  const viewAuthorPosts = useCallback((secUid: string): void => {
-    setViewerOpen(false)
-    setShowAuthorDropdown(false)
-    setSelectedSecUid(secUid)
-    gridScrollRef.current?.scrollTo({ top: 0 })
-  }, [])
 
   const selectedAuthor = authors.find((a) => a.sec_uid === selectedSecUid)
 
@@ -430,6 +542,10 @@ export default function BrowsePage() {
         title="视频库"
         actions={
           <>
+            <Button variant="outline" onClick={() => setLocalImportOpen(true)}>
+              <Upload className="h-4 w-4 mr-2" />
+              导入本地
+            </Button>
             {/* Search Box */}
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[#A1A1A6]" />
@@ -516,6 +632,7 @@ export default function BrowsePage() {
                         <button
                           key={author.sec_uid}
                           onClick={() => {
+                            rememberFullList()
                             setSelectedSecUid(author.sec_uid)
                             setShowAuthorDropdown(false)
                             setAuthorSearch('')
@@ -715,6 +832,7 @@ export default function BrowsePage() {
                     onOpen={handlePostClick}
                     onAuthorClick={viewAuthorPosts}
                     onAddTags={setTagTarget}
+                    onSetLevel={setLevelTarget}
                     onEditTags={editPostTags}
                     onAuthorTags={viewAuthorTags}
                   />
@@ -751,7 +869,20 @@ export default function BrowsePage() {
         onAdded={() => refreshPostTags(tagTarget?.id)}
       />
 
-      <VideoDownloadDialog open={downloadDialogOpen} onOpenChange={setDownloadDialogOpen} />
+      <SetContentLevelDialog
+        open={levelTarget !== null}
+        onOpenChange={(o) => !o && setLevelTarget(null)}
+        postId={levelTarget?.id ?? null}
+        aiLevel={levelTarget?.analysis_content_level ?? null}
+        manualLevel={levelTarget?.manual_content_level ?? null}
+        onSaved={() => refreshPostTags(levelTarget?.id)}
+      />
+
+      <LocalImportDialog
+        open={localImportOpen}
+        onOpenChange={setLocalImportOpen}
+        onImported={handleImported}
+      />
     </Page>
   )
 }

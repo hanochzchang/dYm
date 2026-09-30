@@ -10,7 +10,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>dYm Feed</title>
-    <link rel="stylesheet" href="/app.css?v=13" />
+    <link rel="stylesheet" href="/app.css?v=16" />
   </head>
   <body>
     <div class="ambient" aria-hidden="true">
@@ -54,11 +54,13 @@
             <span>已分析</span>
           </button>
         </div>
+        <button id="previewToggle" class="glass hover-pill" type="button" aria-pressed="true" title="悬停时自动播放预览和配乐；关掉后悬停只放大封面">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path fill="currentColor" d="M8 5v14l11-7z"/>
+          </svg>
+          <span>悬停播放</span>
+        </button>
       </header>
-
-      <div class="author-bar">
-        <div id="authorScroll" class="author-scroll"></div>
-      </div>
 
       <section id="authorPanel" class="author-panel" hidden></section>
 
@@ -83,6 +85,6 @@
 
     <div id="toast" class="glass toast" role="status" aria-live="polite"></div>
 
-    <script type="module" src="/app.js?v=13"></script>
+    <script type="module" src="/app.js?v=16"></script>
   </body>
 </html>

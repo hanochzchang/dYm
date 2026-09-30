@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
-import { ChevronDown, ChevronRight, FileText, ListVideo, Star, Info } from 'lucide-react'
+import { ChevronDown, ChevronRight, FileText, ListVideo, Star, Info, Pencil } from 'lucide-react'
 import type { PostAnalysisDetail, VideoAnalysis } from '@shared/analysis'
+import { cn } from '@/lib/utils'
+import { SetContentLevelDialog } from '../SetContentLevelDialog'
+import { EditAnalysisDialog } from '../EditAnalysisDialog'
 
 interface AnalysisDetailCardProps {
   postId: number
@@ -8,6 +11,12 @@ interface AnalysisDetailCardProps {
   refreshKey: number
   /** 旧版（v1）分析只有一句总结，没有结构化结果时退化显示它 */
   fallbackSummary?: string | null
+  /** 当前手动内容等级；非 null 表示已覆盖 AI 分 */
+  manualLevel?: number | null
+  /** 改完手动分后通知父级刷新 */
+  onLevelChange?: () => void
+  /** 改完人工修订后通知父级刷新 */
+  onAnalysisChange?: () => void
 }
 
 function fmtTime(sec: number): string {
@@ -40,7 +49,10 @@ function nonEmpty(list: string[] | undefined): string[] {
 export function AnalysisDetailCard({
   postId,
   refreshKey,
-  fallbackSummary
+  fallbackSummary,
+  manualLevel = null,
+  onLevelChange,
+  onAnalysisChange
 }: AnalysisDetailCardProps): React.JSX.Element | null {
   // 结果带上请求 key：key 不匹配就是还没加载完，避免切换作品时闪一下旧数据
   const key = `${postId}:${refreshKey}`
@@ -48,6 +60,8 @@ export function AnalysisDetailCard({
     null
   )
   const [transcriptOpen, setTranscriptOpen] = useState(false)
+  const [levelOpen, setLevelOpen] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -88,6 +102,20 @@ export function AnalysisDetailCard({
         <div className="flex items-center gap-2">
           <FileText className="h-4 w-4 text-[#0A84FF]" />
           <span className="text-sm font-medium text-[#1D1D1F]">AI 理解</span>
+          {detail.manual && (
+            <span className="px-2 py-0.5 rounded-md bg-[#E8F0FE] text-[11px] text-[#0A84FF]">
+              手动修订
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => setEditOpen(true)}
+            title="手动修改摘要、分类、场景等文本"
+            className="inline-flex items-center gap-1 text-[11px] text-[#6E6E73] hover:text-[#0A84FF] transition-colors"
+          >
+            <Pencil className="h-3 w-3" />
+            编辑
+          </button>
         </div>
         {detail?.meta && (
           <span className="text-[11px] text-[#A1A1A6] truncate">
@@ -110,7 +138,11 @@ export function AnalysisDetailCard({
         </p>
       )}
 
-      <Overview analysis={analysis} />
+      <Overview
+        analysis={analysis}
+        manualLevel={manualLevel}
+        onEditLevel={() => setLevelOpen(true)}
+      />
 
       {analysis.chapters.length > 0 && (
         <div className="space-y-2">
@@ -176,11 +208,37 @@ export function AnalysisDetailCard({
           )}
         </div>
       )}
+
+      {/* Dialog 走 portal，挂在树里哪都行，放这儿省得再包一层 */}
+      <SetContentLevelDialog
+        open={levelOpen}
+        onOpenChange={setLevelOpen}
+        postId={postId}
+        aiLevel={analysis.rating.level > 0 ? analysis.rating.level : null}
+        manualLevel={manualLevel ?? null}
+        onSaved={onLevelChange}
+      />
+      <EditAnalysisDialog
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        postId={postId}
+        ai={detail.ai}
+        manual={detail.manual}
+        onSaved={onAnalysisChange}
+      />
     </div>
   )
 }
 
-function Overview({ analysis }: { analysis: VideoAnalysis }): React.JSX.Element {
+function Overview({
+  analysis,
+  manualLevel,
+  onEditLevel
+}: {
+  analysis: VideoAnalysis
+  manualLevel: number | null
+  onEditLevel: () => void
+}): React.JSX.Element {
   const facts: { label: string; value: string }[] = []
   const category = [analysis.category.primary, analysis.category.secondary].filter(Boolean)
   if (category.length) facts.push({ label: '分类', value: category.join(' / ') })
@@ -232,13 +290,26 @@ function Overview({ analysis }: { analysis: VideoAnalysis }): React.JSX.Element 
         </div>
       )}
 
-      {(analysis.rating.level > 0 || flags.length > 0) && (
+      {(analysis.rating.level > 0 || manualLevel !== null || flags.length > 0) && (
         <div className="flex flex-wrap items-center gap-2 text-xs">
-          {analysis.rating.level > 0 && (
-            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-[#FEF3C7] text-[#B45309] font-medium">
+          {(analysis.rating.level > 0 || manualLevel !== null) && (
+            <button
+              type="button"
+              onClick={onEditLevel}
+              title="点击修改内容等级"
+              className={cn(
+                'inline-flex items-center gap-1 px-2 py-1 rounded-md font-medium transition-colors',
+                manualLevel !== null
+                  ? 'bg-[#E8F0FE] text-[#0A84FF] hover:bg-[#D6E6FD]'
+                  : 'bg-[#FEF3C7] text-[#B45309] hover:bg-[#FDECC8]'
+              )}
+            >
               <Star className="h-3 w-3" />
-              {analysis.rating.level}/10
-            </span>
+              {manualLevel !== null ? `手动 ${manualLevel}/10` : `${analysis.rating.level}/10`}
+            </button>
+          )}
+          {manualLevel !== null && analysis.rating.level > 0 && (
+            <span className="text-[#A1A1A6]">AI {analysis.rating.level}/10</span>
           )}
           {dims.map(([k, v]) => (
             <span key={k} className="px-2 py-1 rounded-md bg-[#F5F5F7] text-[#6E6E73]">

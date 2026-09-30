@@ -1,42 +1,19 @@
 import { Suspense, useEffect, useState } from 'react'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import {
-  Download,
-  Home,
-  Users,
-  Sparkles,
-  Settings,
-  ScrollText,
-  HardDrive,
-  LayoutGrid,
-  Tags,
-  Radio,
-  Code2,
-  PanelLeftClose,
-  PanelLeftOpen
-} from 'lucide-react'
+import { Download, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import { WelcomeDialog } from '../dialogs/WelcomeDialog'
 import { DEVELOPER_MODE_EVENT } from '@/lib/developer-mode'
+import {
+  navItems,
+  devNavItems,
+  HIDDEN_NAV_KEY,
+  NAV_VISIBILITY_EVENT,
+  parseHiddenNavItems
+} from '@/lib/sidebar-nav'
 
 const COLLAPSE_KEY = 'sidebar_collapsed'
-
-const navItems = [
-  { path: '/', label: '数据概览', icon: Home },
-  { path: '/browse', label: '视频浏览', icon: LayoutGrid },
-  { path: '/users', label: '用户管理', icon: Users },
-  { path: '/download', label: '下载任务', icon: Download },
-  { path: '/files', label: '文件管理', icon: HardDrive },
-  { path: '/analysis', label: '视频分析', icon: Sparkles },
-  { path: '/tags', label: '标签管理', icon: Tags },
-  { path: '/live', label: '直播录制', icon: Radio },
-  { path: '/logs', label: '同步日志', icon: ScrollText },
-  { path: '/settings', label: '系统设置', icon: Settings }
-]
-
-/** 开发者模式下额外显示的菜单项 */
-const devNavItems = [{ path: '/scripts', label: '自定义脚本', icon: Code2 }]
 
 export function AppLayout(): React.JSX.Element {
   const location = useLocation()
@@ -45,6 +22,7 @@ export function AppLayout(): React.JSX.Element {
   const [isAdding, setIsAdding] = useState(false)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSE_KEY) === '1')
   const [developerMode, setDeveloperMode] = useState(false)
+  const [hiddenNav, setHiddenNav] = useState<string[]>([])
 
   const toggleCollapsed = (): void => {
     setCollapsed((prev) => {
@@ -67,12 +45,32 @@ export function AppLayout(): React.JSX.Element {
     return () => window.removeEventListener(DEVELOPER_MODE_EVENT, handler)
   }, [])
 
+  // 侧边栏菜单可见性：初始读取 + 监听设置页的实时切换
+  useEffect(() => {
+    window.api.settings
+      .get(HIDDEN_NAV_KEY)
+      .then((value) => setHiddenNav(parseHiddenNavItems(value)))
+      .catch(() => setHiddenNav([]))
+
+    const handler = (event: Event): void => {
+      setHiddenNav((event as CustomEvent<string[]>).detail)
+    }
+    window.addEventListener(NAV_VISIBILITY_EVENT, handler)
+    return () => window.removeEventListener(NAV_VISIBILITY_EVENT, handler)
+  }, [])
+
   // 关闭开发者模式时，若正停留在开发者页面则退回首页
   useEffect(() => {
     if (!developerMode && devNavItems.some((item) => location.pathname.startsWith(item.path))) {
       navigate('/', { replace: true })
     }
   }, [developerMode, location.pathname, navigate])
+
+  // 当前停留的页面被自己藏掉时退回首页，避免「菜单里没有它、人却在页面上」。
+  // 只认全等，子路由（如 /download/:id）不跟着弹走，免得从任务详情半路被甩出去。
+  useEffect(() => {
+    if (hiddenNav.includes(location.pathname)) navigate('/', { replace: true })
+  }, [hiddenNav, location.pathname, navigate])
 
   // 监听剪贴板中的抖音链接
   useEffect(() => {
@@ -141,6 +139,11 @@ export function AppLayout(): React.JSX.Element {
     return location.pathname.startsWith(path)
   }
 
+  // 设置页里被关掉的项不渲染，其余顺序不变
+  const visibleNavItems = [...navItems, ...(developerMode ? devNavItems : [])].filter(
+    (item) => !hiddenNav.includes(item.path)
+  )
+
   return (
     <div className="h-screen flex bg-[#F5F5F7]">
       <WelcomeDialog />
@@ -183,7 +186,13 @@ export function AppLayout(): React.JSX.Element {
         </div>
 
         {/* Navigation */}
-        <nav className={cn('flex-1 space-y-1', collapsed ? 'p-2.5' : 'p-4')}>
+        {/* justify-center-safe：菜单少时整体居中，项多到装不下则退回顶部对齐并出滚动条 */}
+        <nav
+          className={cn(
+            'flex-1 flex flex-col justify-center-safe overflow-y-auto space-y-1',
+            collapsed ? 'p-2.5' : 'p-4'
+          )}
+        >
           {collapsed ? (
             <div className="h-4" />
           ) : (
@@ -191,7 +200,7 @@ export function AppLayout(): React.JSX.Element {
               菜单
             </span>
           )}
-          {[...navItems, ...(developerMode ? devNavItems : [])].map((item) => {
+          {visibleNavItems.map((item) => {
             const Icon = item.icon
             const active = isActive(item.path)
             return (

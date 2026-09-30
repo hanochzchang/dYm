@@ -6,7 +6,6 @@ import { Link } from 'react-router-dom'
 import {
   Loader2,
   Chrome,
-  Download,
   RefreshCw,
   FolderSync,
   FolderOpen,
@@ -16,6 +15,13 @@ import {
   RotateCcw
 } from 'lucide-react'
 import { emitDeveloperModeChange } from '@/lib/developer-mode'
+import {
+  navItems,
+  LOCKED_NAV_PATH,
+  HIDDEN_NAV_KEY,
+  parseHiddenNavItems,
+  emitNavVisibilityChange
+} from '@/lib/sidebar-nav'
 
 export default function SystemPage() {
   // Cookie
@@ -55,36 +61,26 @@ export default function SystemPage() {
   // 开发者模式（默认关闭）
   const [developerMode, setDeveloperMode] = useState(false)
 
+  // 侧边栏里被隐藏的菜单路径（默认空，即全部显示）
+  const [hiddenNav, setHiddenNav] = useState<string[]>([])
+
   // 允许脚本执行本地命令（默认关闭）
   const [allowShell, setAllowShell] = useState(false)
 
   // 设置加载完成前禁用保存，避免用默认值覆盖真实配置
   const [settingsLoaded, setSettingsLoaded] = useState(false)
 
-  // 更新
+  // 版本
   const [currentVersion, setCurrentVersion] = useState('')
-  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null)
-  const [checkingUpdate, setCheckingUpdate] = useState(false)
 
   useEffect(() => {
     loadSettings()
     loadVersion()
-
-    const unsubscribe = window.api.updater.onStatus((status) => {
-      setUpdateStatus(status)
-      if (status.status === 'error') {
-        toast.error(`更新失败: ${status.error}`)
-      } else if (status.status === 'downloaded') {
-        toast.success('更新已下载，重启应用即可安装')
-      }
-    })
-
-    return () => unsubscribe()
   }, [])
 
   const loadVersion = async () => {
     try {
-      const version = await window.api.updater.getCurrentVersion()
+      const version = await window.api.system.getAppVersion()
       setCurrentVersion(version)
     } catch {
       setCurrentVersion('未知')
@@ -110,6 +106,7 @@ export default function SystemPage() {
       setLiveMaxDuration(settings.live_max_duration || '0')
       setTelemetryEnabled(settings.telemetry_enabled !== 'false')
       setDeveloperMode(settings.developer_mode === 'true')
+      setHiddenNav(parseHiddenNavItems(settings.hidden_nav_items))
       setAllowShell(settings.scripts_allow_shell === 'true')
       setSettingsLoaded(true)
     } catch (error) {
@@ -134,6 +131,21 @@ export default function SystemPage() {
       setDeveloperMode(next)
       emitDeveloperModeChange(next)
       toast.success(next ? '开发者模式已开启' : '开发者模式已关闭')
+    } catch {
+      toast.error('保存失败')
+    }
+  }
+
+  // 拨一下即存即生效，成功不弹 toast（连拨几下会很吵），失败才报
+  const handleToggleNavItem = async (path: string): Promise<void> => {
+    if (path === LOCKED_NAV_PATH) return
+    const next = hiddenNav.includes(path)
+      ? hiddenNav.filter((p) => p !== path)
+      : [...hiddenNav, path]
+    try {
+      await window.api.settings.set(HIDDEN_NAV_KEY, JSON.stringify(next))
+      setHiddenNav(next)
+      emitNavVisibilityChange(next)
     } catch {
       toast.error('保存失败')
     }
@@ -306,36 +318,6 @@ export default function SystemPage() {
     } catch {
       toast.error('保存失败')
     }
-  }
-
-  // Update handlers
-  const handleCheckUpdate = async () => {
-    setCheckingUpdate(true)
-    try {
-      const info = await window.api.updater.check()
-      if (info) {
-        toast.success(`发现新版本: v${info.version}`)
-      } else {
-        toast.info('当前已是最新版本')
-      }
-    } catch (error) {
-      toast.error(`检查更新失败: ${(error as Error).message}`)
-    } finally {
-      setCheckingUpdate(false)
-    }
-  }
-
-  const handleDownloadUpdate = async () => {
-    try {
-      await window.api.updater.download()
-      toast.info('开始下载更新...')
-    } catch (error) {
-      toast.error(`下载失败: ${(error as Error).message}`)
-    }
-  }
-
-  const handleInstallUpdate = () => {
-    window.api.updater.install()
   }
 
   return (
@@ -725,9 +707,61 @@ export default function SystemPage() {
           </div>
         </Section>
 
+        <Section
+          eyebrow="界面"
+          title="侧边栏菜单"
+          description="关掉的项会从左侧菜单里隐藏；页面和路由都保留着，想恢复随时在这里开回来"
+        >
+          <div className="bg-white rounded-2xl border border-[#E5E5E7] shadow-sm p-6">
+            <div className="divide-y divide-[#E5E5E7]">
+              {navItems.map((item) => {
+                const Icon = item.icon
+                const locked = item.path === LOCKED_NAV_PATH
+                const visible = !hiddenNav.includes(item.path)
+                return (
+                  <div
+                    key={item.path}
+                    className="flex flex-col gap-3 py-4 md:flex-row md:items-center md:justify-between"
+                  >
+                    <div className="flex items-center gap-3">
+                      <Icon
+                        className={`h-4 w-4 ${locked ? 'text-[#C7C7CC]' : 'text-[#6E6E73]'}`}
+                      />
+                      <p className="text-sm text-[#1D1D1F]">{item.label}</p>
+                      {locked && (
+                        <span className="text-xs text-[#A1A1A6]">
+                          入口不可隐藏，否则进不了设置页改回来
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      disabled={locked || !settingsLoaded}
+                      onClick={() => handleToggleNavItem(item.path)}
+                      className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                        locked
+                          ? 'bg-[#E5E5E7] cursor-not-allowed'
+                          : visible
+                            ? 'bg-[#0A84FF]'
+                            : 'bg-[#D1D1D6]'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                          visible ? 'translate-x-[22px]' : 'translate-x-0.5'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </Section>
+
         <Section eyebrow="系统" title="版本与安全">
           <div className="grid gap-6">
-            {/* Version & Update Card */}
+            {/* About Card */}
             <div className="bg-white rounded-2xl border border-[#E5E5E7] shadow-sm p-6">
               <h2 className="text-base font-semibold text-[#1D1D1F] mb-4">关于</h2>
 
@@ -736,48 +770,6 @@ export default function SystemPage() {
                   <div>
                     <p className="text-sm text-[#1D1D1F]">当前版本</p>
                     <p className="text-xs text-[#A1A1A6] mt-1">v{currentVersion}</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {updateStatus?.status === 'available' && (
-                      <button
-                        onClick={handleDownloadUpdate}
-                        className="h-9 px-4 rounded-lg bg-[#0A84FF] text-sm text-white font-medium hover:bg-[#0060D5] transition-colors flex items-center gap-2"
-                      >
-                        <Download className="h-4 w-4" />
-                        下载 v{updateStatus.info?.version}
-                      </button>
-                    )}
-                    {updateStatus?.status === 'downloading' && (
-                      <div className="flex items-center gap-2 text-sm text-[#A1A1A6]">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        下载中 {Math.round(updateStatus.progress || 0)}%
-                      </div>
-                    )}
-                    {updateStatus?.status === 'downloaded' && (
-                      <button
-                        onClick={handleInstallUpdate}
-                        className="h-9 px-4 rounded-lg bg-[#22C55E] text-sm text-white font-medium hover:bg-[#16A34A] transition-colors flex items-center gap-2"
-                      >
-                        <RefreshCw className="h-4 w-4" />
-                        重启安装
-                      </button>
-                    )}
-                    {(!updateStatus ||
-                      updateStatus.status === 'not-available' ||
-                      updateStatus.status === 'error') && (
-                      <button
-                        onClick={handleCheckUpdate}
-                        disabled={checkingUpdate}
-                        className="h-9 px-4 rounded-lg border border-[#E5E5E7] text-sm text-[#1D1D1F] hover:bg-[#F2F2F4] transition-colors flex items-center gap-2 disabled:opacity-50"
-                      >
-                        {checkingUpdate ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <RefreshCw className="h-4 w-4" />
-                        )}
-                        检查更新
-                      </button>
-                    )}
                   </div>
                 </div>
 

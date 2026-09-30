@@ -103,6 +103,7 @@ export function registerSystemIpc(): void {
     }
   })
   ipcMain.handle('system:getWebServerInfo', () => getWebServerInfo())
+  ipcMain.handle('system:getAppVersion', () => app.getVersion())
 
   // Dashboard
   ipcMain.handle('dashboard:getOverview', () => getDashboardOverview())

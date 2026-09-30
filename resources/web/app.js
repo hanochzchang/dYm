@@ -1,6 +1,5 @@
 const state = {
   tags: [],
-  authors: [],
   posts: [],
   page: 1,
   pageSize: 18,
@@ -10,6 +9,8 @@ const state = {
   globalMuted: false,
   autoplayNext: false,
   immersiveAudio: false,
+  /** 网格悬停预览的开关，只存内存：刷新回到开（= 现在的行为） */
+  hoverPreviewOn: true,
   feedSort: 'create_time',
   randomSeed: 0,
   activePostId: null,
@@ -17,6 +18,11 @@ const state = {
   playerStartIndex: 0,
   imageAutoTimer: null,
   imageEndTimer: null,
+  /** 翻下一条的绝对时刻；暂停时换算成 imageEndRemaining，恢复时接着走 */
+  imageEndAt: 0,
+  imageEndRemaining: 0,
+  /** 图文被空格暂停中。视频有自己的 play/pause，不用这个 */
+  storyPaused: false,
   imageManualOverride: new Set(),
   author: null,
   authorPage: false,
@@ -47,7 +53,6 @@ const el = {
   playerView: document.getElementById('playerView'),
   playerBack: document.getElementById('playerBack'),
   playerFeed: document.getElementById('playerFeed'),
-  authorScroll: document.getElementById('authorScroll'),
   authorPanel: document.getElementById('authorPanel'),
   authorModal: document.getElementById('authorModal'),
   grid: document.getElementById('grid'),
@@ -57,6 +62,7 @@ const el = {
   searchClear: document.getElementById('searchClear'),
   analyzedToggle: document.getElementById('analyzedToggle'),
   sortToggle: document.getElementById('sortToggle'),
+  previewToggle: document.getElementById('previewToggle'),
   sortLabel: document.getElementById('sortLabel'),
   sortMenu: document.getElementById('sortMenu')
 }
@@ -156,7 +162,6 @@ function captureBrowseSnapshot() {
     total: state.total,
     hasMore: state.hasMore,
     randomSeed: state.randomSeed,
-    authors: state.authors.slice(),
     filters: { ...state.filters },
     searchValue: el.searchInput.value,
     scrollTop: el.grid.scrollTop,
@@ -175,14 +180,12 @@ function restoreBrowseSnapshot(snap) {
   state.total = snap.total
   state.hasMore = snap.hasMore
   state.randomSeed = snap.randomSeed
-  state.authors = snap.authors
   state.filters = { ...snap.filters }
   el.searchInput.value = snap.searchValue
   syncSearchClearVisibility()
   el.analyzedToggle.setAttribute('aria-pressed', String(Boolean(state.filters.analyzedOnly)))
   state.author = snap.author
   state.authorPage = snap.authorPage
-  renderAuthors()
   if (state.authorPage && state.author) renderAuthorPanel()
   else {
     el.authorPanel.hidden = true
@@ -217,26 +220,6 @@ function consumeHistory(steps = 1) {
   else history.go(-steps)
 }
 
-// ── Author Bar ──
-
-function renderAuthors() {
-  const items = [{ sec_uid: '', nickname: '全部' }, ...state.authors]
-  el.authorScroll.innerHTML = items
-    .map(
-      (a) =>
-        `<button class="author-tab ${state.filters.secUid === a.sec_uid ? 'is-active' : ''}" data-uid="${esc(a.sec_uid)}">${esc(a.nickname)}</button>`
-    )
-    .join('')
-
-  el.authorScroll.querySelectorAll('.author-tab').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const uid = btn.dataset.uid || ''
-      if (uid) enterAuthor(uid)
-      else resetToAll()
-    })
-  })
-}
-
 // ── Author Page ──
 
 function clearAuthorSyncTimer() {
@@ -248,8 +231,14 @@ function clearAuthorSyncTimer() {
 
 async function enterAuthor(secUid) {
   if (!secUid) return
-  if (state.authorPage && state.filters.secUid === secUid) return
-  if (isPlayerOpen()) hidePlayer()
+  const sameAuthor = state.authorPage && state.filters.secUid === secUid
+  const fromPlayer = isPlayerOpen()
+  // 底下停的已经就是这个作者页：不重进（会叠一层空快照），播放页里则只需退出播放器
+  if (sameAuthor) {
+    if (fromPlayer) closePlayer()
+    return
+  }
+  if (fromPlayer) hidePlayer({ restoreGrid: false })
   if (!state.loading || state.posts.length > 0) {
     state.browseStack.push(captureBrowseSnapshot())
     if (state.browseStack.length > 8) state.browseStack.shift()
@@ -268,7 +257,13 @@ async function enterAuthor(secUid) {
   }
   renderAuthorPanel()
   loadGrid(true)
-  pushViewHistory('author', { secUid })
+  if (fromPlayer) {
+    // 顶掉播放器那一格：返回一次就回到浏览页，不留一个按了没反应的空档
+    history.replaceState({ view: 'author', secUid }, '')
+    state.historyFlags.author = true
+  } else {
+    pushViewHistory('author', { secUid })
+  }
 }
 
 function applyExitAuthor() {
@@ -292,45 +287,6 @@ function exitAuthor() {
   const steps = (state.historyFlags.author ? 1 : 0) + (state.historyFlags.settings ? 1 : 0)
   applyExitAuthor()
   consumeHistory(steps)
-}
-
-function applyResetToAll() {
-  hideAuthorModal()
-  clearAuthorSyncTimer()
-  invalidateFeed()
-  state.browseStack = []
-  state.author = null
-  state.authorPage = false
-  state.historyFlags.author = false
-  state.filters.secUid = ''
-  el.authorPanel.hidden = true
-  el.authorPanel.innerHTML = ''
-  el.grid.scrollTop = 0
-  loadGrid(true)
-}
-
-function resetToAll() {
-  if (!state.authorPage && !state.filters.secUid) return
-  const steps = state.browseStack.length + (state.historyFlags.settings ? 1 : 0)
-  applyResetToAll()
-  consumeHistory(steps)
-}
-
-let authorSettingsLoading = false
-
-async function openAuthorSettings(secUid) {
-  if (!secUid || authorSettingsLoading) return
-  if (!el.authorModal.hidden && state.author?.secUid === secUid) return
-  authorSettingsLoading = true
-  try {
-    state.author = await fetchJson(`/api/author?secUid=${encodeURIComponent(secUid)}`)
-  } catch {
-    state.author = { secUid, nickname: '', settings: {} }
-  } finally {
-    authorSettingsLoading = false
-  }
-  openAuthorModal()
-  if (isAuthorSyncing(state.author)) startAuthorSyncPolling()
 }
 
 const SYNC_PRESETS = [
@@ -596,10 +552,17 @@ function gridItemHtml(post) {
   const cover = coverUrl(post)
   const desc = truncate(post.desc || post.caption || post.analysis?.summary || '', 20)
   const badge = post.isImagePost ? `${post.media?.imageUrls?.length || 0} 图` : ''
+  // 图集只认第一张的动态图：封面就是第一张，拿别的张去预览会对不上画面
+  const previewUrl =
+    post.media?.type === 'video' ? post.media.videoUrl : (post.media?.imageVideoUrls?.[0] ?? null)
+  // 动态图 mp4 的音轨是数字静音，图集要出声只能另外放同目录的 mp3 配乐
+  const previewAudioUrl = post.media?.type === 'images' && previewUrl ? post.media.musicUrl : null
 
   return `
-    <div class="grid-item" data-post-id="${post.id}">
+    <div class="grid-item" data-post-id="${post.id}"${previewUrl ? ` data-video-url="${esc(previewUrl)}"` : ''}${previewAudioUrl ? ` data-audio-url="${esc(previewAudioUrl)}"` : ''}>
       ${cover ? `<img class="grid-cover" src="${esc(cover)}" />` : ''}
+      ${previewUrl ? '<video class="grid-preview" preload="none" muted loop playsinline></video>' : ''}
+      ${previewAudioUrl ? '<audio class="grid-preview-audio" preload="none" loop></audio>' : ''}
       ${badge ? `<span class="grid-badge">${esc(badge)}</span>` : ''}
       <div class="grid-info">
         <div class="grid-author" data-author-uid="${esc(post.author?.secUid || '')}">@${esc(post.author?.nickname || '')}</div>
@@ -667,7 +630,6 @@ async function loadGrid(reset = false) {
   try {
     const payload = await fetchJson(`/api/feed?${feedQuery(state.page, state.pageSize)}`)
     if (seq !== state.loadSeq || epoch !== state.feedEpoch) return
-    state.authors = payload.authors || []
     state.total = payload.total || 0
     state.hasMore = Boolean(payload.hasMore)
     const incoming = Array.isArray(payload.posts) ? payload.posts : []
@@ -686,8 +648,6 @@ async function loadGrid(reset = false) {
         }
       }
     }
-
-    renderAuthors()
 
     if (state.author && !el.authorPanel.hidden) {
       const dl = el.authorPanel.querySelector('.js-author-downloaded')
@@ -727,8 +687,97 @@ async function loadGrid(reset = false) {
   }
 }
 
+// ── Grid Hover Preview ──
+// 鼠标停在视频格子上就地预览；图集则是首图带动态图的那种，循环播那一小段，声音另配它的 mp3
+// （动态图本身的音轨是静音的）。声音跟随播放器那个静音开关；全程只留当前悬停的那一格在播，
+// 移开立刻把 src 摘掉——不然悬停过的每一格都会一直占着解码和缓冲。
+const canHoverPreview = window.matchMedia('(hover: hover) and (pointer: fine)').matches
+const HOVER_PREVIEW_DELAY = 120
+
+const gridPreview = { item: null, timer: 0 }
+
+function stopGridPreview() {
+  if (gridPreview.timer) {
+    clearTimeout(gridPreview.timer)
+    gridPreview.timer = 0
+  }
+  const item = gridPreview.item
+  gridPreview.item = null
+  if (!item) return
+  item.classList.remove('is-previewing')
+  const audio = item.querySelector('audio.grid-preview-audio')
+  if (audio) {
+    audio.pause()
+    audio.currentTime = 0
+    audio.removeAttribute('src')
+    audio.load()
+  }
+  const video = item.querySelector('video.grid-preview')
+  if (!video) return
+  video.pause()
+  video.currentTime = 0
+  video.removeAttribute('src')
+  video.load()
+}
+
+function startGridPreview(item) {
+  gridPreview.timer = 0
+  if (gridPreview.item === item) return
+  stopGridPreview()
+  // 延迟这 120ms 里可能刚换了筛选、整个网格被清空重建，那这张卡片已经不在页面上了
+  if (!item.isConnected) return
+  const video = item.querySelector('video.grid-preview')
+  const url = item.dataset.videoUrl
+  if (!video || !url) return
+  gridPreview.item = item
+  video.muted = state.globalMuted
+  video.src = url
+  item.classList.add('is-previewing')
+  const playing = video.play()
+  if (playing) {
+    // 页面还没点过任何东西时，浏览器会拦下带声音的自动播放（悬停不算「用户操作」）：
+    // 退回静音重试一次，别让这一格干脆不出画面
+    playing.catch(() => {
+      if (gridPreview.item !== item) return
+      video.muted = true
+      video.play().catch(() => {})
+    })
+  }
+
+  const audio = item.querySelector('audio.grid-preview-audio')
+  const audioUrl = item.dataset.audioUrl
+  if (audio && audioUrl) {
+    audio.muted = state.globalMuted
+    audio.src = audioUrl
+    // 同一条自动播放策略也会拦下它；这里退回静音等于没放，索性作罢
+    audio.play().catch(() => {})
+  }
+}
+
+// 事件委托挂在整个网格上：翻页追加新卡片时不必重新绑定
+if (canHoverPreview) {
+  el.grid.addEventListener('mouseover', (event) => {
+    if (!state.hoverPreviewOn) return
+    const item = event.target.closest('.grid-item')
+    if (!item || item === gridPreview.item) return
+    if (gridPreview.timer) clearTimeout(gridPreview.timer)
+    // 延迟起播：鼠标只是扫过去的话不该闪一下视频
+    gridPreview.timer = window.setTimeout(() => startGridPreview(item), HOVER_PREVIEW_DELAY)
+  })
+
+  el.grid.addEventListener('mouseout', (event) => {
+    const item = event.target.closest('.grid-item')
+    if (!item) return
+    // 在同一个格子内部移动也会不停触发 mouseout，指针没出格子就当作还在悬停
+    if (event.relatedTarget && item.contains(event.relatedTarget)) return
+    if (gridPreview.item === item || gridPreview.timer) stopGridPreview()
+  })
+}
+
 // Grid infinite scroll
 el.grid.addEventListener('scroll', () => {
+  // 滚动后格子已经从指针底下挪走了，不停的话会留在原地空放
+  stopGridPreview()
   const remaining = el.grid.scrollHeight - el.grid.scrollTop - el.grid.clientHeight
   if (remaining < window.innerHeight && state.hasMore && !state.loading) {
     loadGrid(false)
@@ -820,7 +869,7 @@ function storyHtml(post, index, total) {
           ${icons.autoplay}
         </button>
         ${
-          post.media?.type === 'images'
+          post.media?.type === 'images' || post.media?.type === 'video'
             ? `<button class="rail-button${state.immersiveAudio ? ' is-active' : ''}" type="button" data-action="immersive" aria-label="沉浸听歌" aria-pressed="${state.immersiveAudio}">
           ${icons.musicNote}
         </button>`
@@ -849,7 +898,7 @@ function mountStoryMedia(story) {
   const video = story.querySelector('.js-story-video')
   if (video) {
     // 模板里写死了 loop，这里按当前开关覆盖：连播开着就得让视频真的能播完
-    video.loop = !state.autoplayNext
+    syncVideoLoop(video)
     bindVideoControls(story, video)
   }
 }
@@ -921,43 +970,57 @@ function syncAudioLoop(story) {
  * 图文的「什么时候翻下一条」。三种规则统一成一个 deadline：
  *   默认 + 多图：走完一轮（张数 × 3 秒），音乐被切断
  *   默认 + 单图：等音乐放完，没音乐就停 IMAGE_SINGLE_DWELL
- *   沉浸听歌：音乐循环到凑够一轮为止（⌈一轮 ÷ 音乐⌉ × 音乐）
+ *   沉浸听歌：音乐放完一遍就翻（视频那边同理，只是走 ended 而不是这条）
  *
  * deadline 只需要 audio.duration 这个元数据，不依赖音乐真的在播 —— 所以静音、
  * 被浏览器自动播放策略拦掉，都不影响计时（视频那条 ended 路径就没这个便利）。
+ *
+ * remaining 是空格暂停后恢复时接着走的那点时间；不传就按当前开关从头算。
  */
-function scheduleImageStoryEnd(story) {
+function scheduleImageStoryEnd(story, remaining) {
   clearImageEndTimer()
+  state.imageEndAt = 0
   if (story.dataset.type !== 'images') return
+  if (state.storyPaused) return
   if (!state.autoplayNext && !state.immersiveAudio) return
   const postId = Number(story.dataset.postId)
   if (postId !== state.activePostId) return
   if (state.imageManualOverride.has(postId)) return
 
-  const count = Number(story.dataset.imageCount || 0)
-  const audio = story.querySelector('.js-story-audio')
-  const cycle = count > 1 ? count * IMAGE_AUTO_INTERVAL : IMAGE_SINGLE_DWELL
-  const song = audio && Number.isFinite(audio.duration) ? audio.duration * 1000 : 0
+  let total = remaining
+  if (total == null) {
+    const count = Number(story.dataset.imageCount || 0)
+    const audio = story.querySelector('.js-story-audio')
+    const cycle = count > 1 ? count * IMAGE_AUTO_INTERVAL : IMAGE_SINGLE_DWELL
+    const song = audio && Number.isFinite(audio.duration) ? audio.duration * 1000 : 0
 
-  let total = cycle
-  if (state.immersiveAudio) total = song > 0 ? Math.ceil(cycle / song) * song : cycle
-  else if (count <= 1) total = song > 0 ? song : cycle
+    if (state.immersiveAudio || count <= 1) total = song || cycle
+    else total = cycle
 
-  // 元数据还没到时先按 cycle 兜底，加载到了再按实际时长重排一次
-  if (song === 0 && audio) {
-    audio.addEventListener(
-      'loadedmetadata',
-      () => {
-        if (Number(story.dataset.postId) === state.activePostId) scheduleImageStoryEnd(story)
-      },
-      { once: true }
-    )
+    // 元数据还没到时先按 cycle 兜底，加载到了再按实际时长重排一次
+    if (song === 0 && audio) {
+      audio.addEventListener(
+        'loadedmetadata',
+        () => {
+          if (Number(story.dataset.postId) === state.activePostId) scheduleImageStoryEnd(story)
+        },
+        { once: true }
+      )
+    }
   }
 
+  state.imageEndAt = Date.now() + total
   state.imageEndTimer = setTimeout(() => {
+    state.imageEndAt = 0
     if (Number(story.dataset.postId) !== state.activePostId) return
     advanceToNextStory(story)
   }, total)
+}
+
+/** 当前停留的那条 story；播放器里大大小小的操作都从它开始 */
+function activeStoryEl() {
+  if (state.activePostId == null) return null
+  return el.playerFeed.querySelector(`.story[data-post-id="${state.activePostId}"]`)
 }
 
 function pauseAll() {
@@ -966,6 +1029,42 @@ function pauseAll() {
   el.playerFeed.querySelectorAll('.js-story-audio').forEach((a) => a.pause())
   clearImageAutoTimer()
   clearImageEndTimer()
+  state.imageEndAt = 0
+  state.imageEndRemaining = 0
+  state.storyPaused = false
+}
+
+/**
+ * 空格在图集上的暂停 / 恢复。视频有 video 元素，play()/pause() 就够了；
+ * 图文没有播放器，只能在这层把三样一起冻住：音乐、图片轮播、翻下一条的 deadline。
+ * 翻页计时记的是「还剩多少毫秒」——不然暂停一首三分钟的歌再恢复，又得从头等一遍。
+ */
+function pauseActiveStory() {
+  const story = activeStoryEl()
+  if (!story || story.dataset.type !== 'images') return
+  state.storyPaused = true
+  story.querySelectorAll('.js-story-audio, .js-gallery-video').forEach((m) => m.pause())
+  state.imageEndRemaining = state.imageEndAt ? Math.max(0, state.imageEndAt - Date.now()) : 0
+  clearImageAutoTimer()
+  clearImageEndTimer()
+  state.imageEndAt = 0
+}
+
+function resumeActiveStory() {
+  const story = activeStoryEl()
+  if (!story || story.dataset.type !== 'images' || !state.storyPaused) return
+  state.storyPaused = false
+  const audio = story.querySelector('.js-story-audio')
+  if (audio) {
+    audio.muted = state.globalMuted
+    if (!state.globalMuted) audio.play().catch(() => {})
+  }
+  const galleryVideo = story.querySelector('.js-gallery-video.is-visible')
+  if (galleryVideo) galleryVideo.play().catch(() => {})
+  startImageAutoTimer(story)
+  const remaining = state.imageEndRemaining
+  state.imageEndRemaining = 0
+  scheduleImageStoryEnd(story, remaining > 0 ? remaining : undefined)
 }
 
 async function activateStory(story) {
@@ -988,7 +1087,7 @@ async function activateStory(story) {
     // 关掉 loop 后，往回滑到一条已播完的视频上时，play() 在部分浏览器不会自动
     // 回到开头，而是立刻再抛一次 ended —— 那会把用户又弹到下一条，看起来像滑不回去。
     // 手动归零消除这个歧义，同时让重看从头发起。
-    if (state.autoplayNext && video.ended) video.currentTime = 0
+    if ((state.autoplayNext || state.immersiveAudio) && video.ended) video.currentTime = 0
     try {
       await video.play()
     } catch {
@@ -1026,6 +1125,14 @@ function syncMute() {
 }
 
 /**
+ * 连播和沉浸听歌在视频上的标准是同一个：播完就翻下一条 —— 所以两者任意一个开着，
+ * 视频都不能再 loop，否则 ended 永远不来，等于把它卡在原地。
+ */
+function syncVideoLoop(video) {
+  video.loop = !state.autoplayNext && !state.immersiveAudio
+}
+
+/**
  * 连播开关只有一个全局状态，但每条 story 各渲染了一个按钮，且媒体元素会被
  * MEDIA_WINDOW 动态挂载/卸载 —— 所以切开关时既要点亮所有按钮，
  * 也要同步已经挂载出来的 video.loop（新挂载的由 mountStoryMedia 负责）。
@@ -1036,13 +1143,13 @@ function syncAutoplay() {
     btn.setAttribute('aria-pressed', String(state.autoplayNext))
   })
   el.playerFeed.querySelectorAll('.js-story-video').forEach((video) => {
-    video.loop = !state.autoplayNext
+    syncVideoLoop(video)
   })
 }
 
 /**
  * 沉浸听歌同样只有一个全局状态、每条 story 各一个按钮，所以跟 syncAutoplay 一样
- * 要批量点亮。区别是它改的是图文的 deadline 和 audio.loop，得把已挂载的都同步一遍。
+ * 要批量点亮。区别是它改的是图文的 deadline、audio.loop，以及视频的 loop，得把已挂载的都同步一遍。
  */
 function syncImmersive() {
   el.playerFeed.querySelectorAll('[data-action="immersive"]').forEach((btn) => {
@@ -1052,10 +1159,10 @@ function syncImmersive() {
   el.playerFeed.querySelectorAll('.story[data-type="images"]').forEach((story) => {
     syncAudioLoop(story)
   })
-  const active =
-    state.activePostId != null
-      ? el.playerFeed.querySelector(`.story[data-post-id="${state.activePostId}"]`)
-      : null
+  el.playerFeed.querySelectorAll('.js-story-video').forEach((video) => {
+    syncVideoLoop(video)
+  })
+  const active = activeStoryEl()
   if (active) scheduleImageStoryEnd(active)
 }
 
@@ -1115,6 +1222,8 @@ function updateImageStory(story, nextIndex) {
 }
 
 async function applyMuteToActive() {
+  // 图集暂停中就别把音乐叫醒；恢复时再按当时的静音状态决定播不播
+  if (state.storyPaused) return
   const story = el.playerFeed.querySelector(`.story[data-post-id="${state.activePostId}"]`)
   if (!story) return
   const video = story.querySelector('.js-story-video')
@@ -1208,7 +1317,7 @@ function bindStories() {
     if (authorEl && authorEl.dataset.authorUid) {
       authorEl.addEventListener('click', (event) => {
         event.stopPropagation()
-        openAuthorSettings(authorEl.dataset.authorUid)
+        enterAuthor(authorEl.dataset.authorUid)
       })
     }
   })
@@ -1306,7 +1415,7 @@ function bindVideoControls(story, video) {
   // 后半句是必需的 —— 用户在切换的那一瞬间手滑/回滑，旧 story 的 ended 可能晚到，
   // 不挡住就会从一条已经翻过去的视频上再往前跳一格。
   video.addEventListener('ended', () => {
-    if (!state.autoplayNext) return
+    if (!state.autoplayNext && !state.immersiveAudio) return
     if (Number(story.dataset.postId) !== state.activePostId) return
     advanceToNextStory(story)
   })
@@ -1426,6 +1535,9 @@ function openPlayer(startIndex) {
   el.playerFeed.innerHTML = posts.map((p, i) => storyHtml(p, i, total)).join('')
   bindStories()
 
+  // 网格马上要被藏起来，别留它在后台继续解码
+  stopGridPreview()
+
   el.playerView.hidden = false
   el.playerView.style.display = 'flex'
   el.browseView.style.display = 'none'
@@ -1463,7 +1575,7 @@ function maybeLoadMoreForPlayer(activeId) {
   if (idx >= state.posts.length - 3) loadGrid(false)
 }
 
-function hidePlayer() {
+function hidePlayer({ restoreGrid = true } = {}) {
   if (!isPlayerOpen()) {
     state.historyFlags.player = false
     return
@@ -1477,7 +1589,8 @@ function hidePlayer() {
   el.playerView.hidden = true
   el.browseView.style.display = 'flex'
   state.historyFlags.player = false
-  if (lastId != null) {
+  // restoreGrid 关掉的场景（比如直接跳作者页）网格马上会被 loadGrid(true) 清空，滚它没意义还闪一下
+  if (lastId != null && restoreGrid) {
     requestAnimationFrame(() => {
       const target = el.grid.querySelector(`.grid-item[data-post-id="${lastId}"]`)
       if (!target) return
@@ -1498,9 +1611,7 @@ function closePlayer() {
 el.playerBack.addEventListener('click', closePlayer)
 
 function getActiveVideo() {
-  if (state.activePostId == null) return null
-  const story = el.playerFeed.querySelector(`.story[data-post-id="${state.activePostId}"]`)
-  return story?.querySelector('.js-story-video') ?? null
+  return activeStoryEl()?.querySelector('.js-story-video') ?? null
 }
 
 function scrollToSiblingStory(delta) {
@@ -1664,6 +1775,17 @@ document.addEventListener('keydown', (event) => {
     }
   }
 
+  // 图集没有 video 元素，暂停得走自己那条（音乐 + 轮播 + 翻页计时一起冻住）
+  if (event.key === ' ' || event.code === 'Space') {
+    const imageStory = activeStoryEl()
+    if (imageStory && imageStory.dataset.type === 'images') {
+      event.preventDefault()
+      if (state.storyPaused) resumeActiveStory()
+      else pauseActiveStory()
+      return
+    }
+  }
+
   const video = getActiveVideo()
   if (!video) return
 
@@ -1713,6 +1835,16 @@ el.analyzedToggle.addEventListener('click', () => {
   el.analyzedToggle.setAttribute('aria-pressed', String(state.filters.analyzedOnly))
   loadGrid(true)
 })
+
+// 悬停预览开关：关掉时把正在播的那一格立刻停掉（顺带清掉还没到点的 120ms 定时器）
+el.previewToggle.addEventListener('click', () => {
+  state.hoverPreviewOn = !state.hoverPreviewOn
+  el.previewToggle.setAttribute('aria-pressed', String(state.hoverPreviewOn))
+  if (!state.hoverPreviewOn) stopGridPreview()
+})
+
+// 触摸设备根本不触发悬停，整个胶囊藏掉，免得留个按了没反应的开关
+if (!canHoverPreview) el.previewToggle.hidden = true
 
 el.sortToggle.addEventListener('click', (event) => {
   event.stopPropagation()

@@ -28,6 +28,10 @@ export interface DbPost {
   analyzed_at: number | null
   // 手动添加的标签（JSON 字符串数组，与 analysis_tags 同格式）
   manual_tags: string | null
+  // 手动内容等级（1-10）：非 NULL 时压过 AI 的 analysis_content_level
+  manual_content_level: number | null
+  // 人工修订的「AI 理解」文本（JSON，只存改过的项），读时由 analysis.ts 盖上
+  manual_analysis: string | null
   // 模型原始输出（JSON 文本）与所用模型
   analysis_raw: string | null
   analysis_model: string | null
@@ -81,6 +85,11 @@ export function getPostByAwemeId(awemeId: string): DbPost | undefined {
   return database.prepare('SELECT * FROM posts WHERE aweme_id = ?').get(awemeId) as
     | DbPost
     | undefined
+}
+
+/** 手动内容等级：传 null 即清回 AI 分（取值合法性由 IPC 边界校验） */
+export function setManualContentLevel(postId: number, level: number | null): void {
+  getDatabase().prepare('UPDATE posts SET manual_content_level = ? WHERE id = ?').run(level, postId)
 }
 
 export function getPostsByUserId(
@@ -199,7 +208,7 @@ const SORT_COLUMNS: Record<SortableField, string> = {
   create_time: 'create_time',
   downloaded_at: 'downloaded_at',
   analyzed_at: 'analyzed_at',
-  analysis_content_level: 'analysis_content_level'
+  analysis_content_level: 'COALESCE(manual_content_level, analysis_content_level)'
 }
 
 // 认不出的字段一律回落发布时间。random 不走这里（它在 JS 里洗牌），
@@ -280,13 +289,14 @@ function buildPostWhere(filters?: PostFilters): { whereClause: string; params: u
     conditions.push(`(${tagMatchSql(filters.tags, 'any', params)})`)
   }
 
+  // 等级区间看的是生效值：手动分压过 AI 分
   if (filters?.minContentLevel !== undefined) {
-    conditions.push('analysis_content_level >= ?')
+    conditions.push('COALESCE(manual_content_level, analysis_content_level) >= ?')
     params.push(filters.minContentLevel)
   }
 
   if (filters?.maxContentLevel !== undefined) {
-    conditions.push('analysis_content_level <= ?')
+    conditions.push('COALESCE(manual_content_level, analysis_content_level) <= ?')
     params.push(filters.maxContentLevel)
   }
 

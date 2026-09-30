@@ -39,6 +39,7 @@ import {
 } from '@/components/ui/context-menu'
 import { MediaViewer } from '@/components/media/MediaViewer'
 import { formatBytes, formatPostDate } from '@/lib/format'
+import { isLocalAwemeId } from '@shared/local-post'
 
 const IMAGE_AWEME_TYPE = 68
 const PAGE_SIZE = 50
@@ -164,10 +165,13 @@ const PostCard = memo(function PostCard({
           <FolderOpen className="h-4 w-4 mr-2" />
           在文件管理器中打开
         </ContextMenuItem>
-        <ContextMenuItem onClick={() => onRedownload(post)}>
-          <RefreshCw className="h-4 w-4 mr-2" />
-          重新下载
-        </ContextMenuItem>
+        {/* 导入的本地作品在抖音上不存在，重新下载只会删掉记录却拉不回来 */}
+        {!isLocalAwemeId(post.aweme_id) && (
+          <ContextMenuItem onClick={() => onRedownload(post)}>
+            <RefreshCw className="h-4 w-4 mr-2" />
+            重新下载
+          </ContextMenuItem>
+        )}
         <ContextMenuItem onClick={() => onDelete(post.id)} className="text-red-600">
           <Trash2 className="h-4 w-4 mr-2" />
           删除文件
@@ -527,10 +531,11 @@ export default function FilesPage() {
   }
 
   const handleFixAllBroken = async () => {
-    if (brokenPosts.length === 0) return
+    const fixable = brokenPosts.filter((p) => !isLocalAwemeId(p.awemeId))
+    if (fixable.length === 0) return
     setFixingAll(true)
     try {
-      const awemeIds = brokenPosts.map((p) => p.awemeId)
+      const awemeIds = fixable.map((p) => p.awemeId)
       const result = await window.api.post.batchRedownload(awemeIds)
       toast.success(`已标记 ${result.success} 个作品重新下载`)
       setBrokenPosts([])
@@ -542,6 +547,9 @@ export default function FilesPage() {
       setFixingAll(false)
     }
   }
+
+  // 导入的本地作品没有抖音来源可拉，批量修复时跳过它们
+  const fixableBrokenCount = brokenPosts.filter((p) => !isLocalAwemeId(p.awemeId)).length
 
   const filteredUsers = (() => {
     if (!userSearch.trim()) return users
@@ -801,14 +809,14 @@ export default function FilesPage() {
             <Button variant="outline" onClick={() => setShowBrokenDialog(false)}>
               关闭
             </Button>
-            {brokenPosts.length > 0 && (
+            {fixableBrokenCount > 0 && (
               <Button onClick={handleFixAllBroken} disabled={fixingAll}>
                 {fixingAll ? (
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                 ) : (
                   <RefreshCw className="h-4 w-4 mr-2" />
                 )}
-                全部重新下载 ({brokenPosts.length})
+                全部重新下载 ({fixableBrokenCount})
               </Button>
             )}
           </DialogFooter>

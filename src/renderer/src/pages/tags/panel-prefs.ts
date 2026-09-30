@@ -19,6 +19,8 @@ export interface PanelPrefs {
   order: FilterSectionId[]
   /** 折叠起来的分组。存「折叠的」而非「展开的」，新增分组时默认展开更自然 */
   collapsed: FilterSectionId[]
+  /** 整条筛选栏是否收起。跟分组折叠同属「看着顺手」的本地偏好 */
+  panelCollapsed: boolean
 }
 
 function isSectionId(value: unknown): value is FilterSectionId {
@@ -26,7 +28,7 @@ function isSectionId(value: unknown): value is FilterSectionId {
 }
 
 function defaults(): PanelPrefs {
-  return { order: [...FILTER_SECTION_IDS], collapsed: [...DEFAULT_COLLAPSED] }
+  return { order: [...FILTER_SECTION_IDS], collapsed: [...DEFAULT_COLLAPSED], panelCollapsed: false }
 }
 
 /**
@@ -48,7 +50,9 @@ export function readPanelPrefs(): PanelPrefs {
       order: sanitizeOrder(parsed?.order),
       collapsed: Array.isArray(parsed?.collapsed)
         ? parsed.collapsed.filter(isSectionId)
-        : [...DEFAULT_COLLAPSED]
+        : [...DEFAULT_COLLAPSED],
+      // 旧存档没这个字段，读出来是 undefined → 保持展开
+      panelCollapsed: parsed?.panelCollapsed === true
     }
   } catch {
     // 存档损坏就退回默认值，不值得为此打扰用户

@@ -29,7 +29,6 @@ import {
   isBlockedProtocol,
   isAllowedExternalProtocol
 } from './utils/block-protocols'
-import { initUpdater, registerUpdaterHandlers } from './services/updater'
 import { initTelemetry, track } from './services/telemetry'
 import { initScheduler, stopScheduler } from './services/scheduler'
 import { closePage } from './services/douyin/page'
@@ -381,9 +380,6 @@ async function bootstrap(): Promise<void> {
   // 脚本钩子：听下载 / 分析 / 录播完成事件
   startScriptHooks()
 
-  // 注册更新 IPC handlers
-  registerUpdaterHandlers()
-
   // 注册全部业务 IPC handler（按领域拆分在 ipc/ 目录）
   registerIpcHandlers()
 
@@ -410,11 +406,6 @@ async function bootstrap(): Promise<void> {
     }
   }, 5000)
 
-  // 初始化自动更新（仅在生产环境）
-  if (!is.dev) {
-    initUpdater(mainWindow)
-  }
-
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the
     // dock icon is clicked and there are no other windows open.
@@ -422,9 +413,6 @@ async function bootstrap(): Promise<void> {
       mainWindow.show()
     } else {
       mainWindow = createWindow()
-      if (!is.dev) {
-        initUpdater(mainWindow)
-      }
     }
   })
 }

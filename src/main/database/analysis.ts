@@ -1,6 +1,8 @@
 import { getDatabase } from './connection'
 import { replacePostTags } from './tags'
+import { applyAnalysisOverride } from '../../shared/analysis'
 import type {
+  AnalysisOverride,
   AnalysisRunMeta,
   PostAnalysisDetail,
   PostTranscript,
@@ -69,8 +71,10 @@ export function savePostAnalysisV2(
       options.tagMode,
       details
     )
-    // closed 模式下没匹配上的标签不算失败：整片摘要、评分等仍然有价值，照常落库
-    const legacy = legacyFieldsOf(analysis)
+    // closed 模式下没匹配上的标签不算失败：整片摘要、评分等仍然有价值，照常落库。
+    // 扁平列要按「盖上人工修订后」的结果写，否则重新分析会把用户改过的摘要/分类冲掉
+    const manual = readAnalysisOverride(postId)
+    const legacy = legacyFieldsOf(manual ? applyAnalysisOverride(analysis, manual) : analysis)
     database
       .prepare(
         `UPDATE posts SET
@@ -164,11 +168,57 @@ export function getPostAnalysisDetail(postId: number): PostAnalysisDetail {
   const row = getDatabase().prepare('SELECT * FROM post_analysis WHERE post_id = ?').get(postId) as
     | AnalysisRow
     | undefined
-  const analysis = row ? safeParse<VideoAnalysis | null>(row.result, null) : null
+  const ai = row ? safeParse<VideoAnalysis | null>(row.result, null) : null
   const meta = row
     ? { ...safeParse<AnalysisRunMeta>(row.meta, {} as AnalysisRunMeta), createdAt: row.created_at }
     : null
-  return { analysis, meta, transcript: getPostTranscript(postId) }
+  const manual = readAnalysisOverride(postId)
+  return {
+    analysis: ai && manual ? applyAnalysisOverride(ai, manual) : ai,
+    ai,
+    manual,
+    meta,
+    transcript: getPostTranscript(postId)
+  }
+}
+
+/** 人工修订存在 posts.manual_analysis 里（JSON）；空对象等同没改过 */
+function readAnalysisOverride(postId: number): AnalysisOverride | null {
+  const row = getDatabase()
+    .prepare('SELECT manual_analysis FROM posts WHERE id = ?')
+    .get(postId) as { manual_analysis: string | null } | undefined
+  if (!row?.manual_analysis) return null
+  const parsed = safeParse<AnalysisOverride | null>(row.manual_analysis, null)
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  return Object.keys(parsed).length > 0 ? parsed : null
+}
+
+/** 写人工修订（传 null 或空对象即清回 AI 原值），并同步扁平列 */
+export function setPostAnalysisOverride(postId: number, override: AnalysisOverride | null): void {
+  const clean = override && Object.keys(override).length > 0 ? override : null
+  getDatabase()
+    .prepare('UPDATE posts SET manual_analysis = ? WHERE id = ?')
+    .run(clean ? JSON.stringify(clean) : null, postId)
+  syncLegacyColumns(postId)
+}
+
+/**
+ * 把「AI + 人工修订」的合并结果写回 posts 的扁平列。
+ * 只同步摘要 / 分类 / 场景 —— 这些是列表与分面筛选取值的地方；
+ * 评分走 manual_content_level 那套，不在这里动。
+ */
+function syncLegacyColumns(postId: number): void {
+  const database = getDatabase()
+  const row = database.prepare('SELECT result FROM post_analysis WHERE post_id = ?').get(postId) as
+    | { result: string }
+    | undefined
+  const ai = row ? safeParse<VideoAnalysis | null>(row.result, null) : null
+  if (!ai) return
+  const manual = readAnalysisOverride(postId)
+  const legacy = legacyFieldsOf(manual ? applyAnalysisOverride(ai, manual) : ai)
+  database
+    .prepare('UPDATE posts SET analysis_category = ?, analysis_scene = ?, analysis_summary = ? WHERE id = ?')
+    .run(legacy.category, legacy.scene, legacy.summary, postId)
 }
 
 /** 更新媒体元数据列（探测一次就够，下次分析直接复用） */

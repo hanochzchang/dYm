@@ -12,6 +12,7 @@ interface VideoCardProps {
   highlightTags?: string[]
   onClick: (postId: number) => void
   onToggleSelect: (postId: number) => void
+  onSetLevel?: (post: DbPost) => void
 }
 
 const MAX_VISIBLE_TAGS = 3
@@ -23,8 +24,13 @@ export const VideoCard = memo(function VideoCard({
   selected,
   highlightTags,
   onClick,
-  onToggleSelect
+  onToggleSelect,
+  onSetLevel
 }: VideoCardProps): React.JSX.Element {
+  // 生效等级：手动分压过 AI 分
+  const level = post.manual_content_level ?? post.analysis_content_level
+  const isManualLevel = post.manual_content_level !== null
+
   const { ordered, manualSet, hl } = useMemo(() => {
     const tags = getMergedTags(post)
     const manualSet = new Set(parseTags(post.manual_tags))
@@ -58,10 +64,21 @@ export const VideoCard = memo(function VideoCard({
             <Play className="h-8 w-8 text-white/40" />
           </div>
         )}
-        {post.analysis_content_level !== null && (
-          <span className="absolute bottom-2 right-2 rounded-md bg-black/55 px-1.5 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm tabular-nums">
-            {post.analysis_content_level}
-          </span>
+        {level !== null && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onSetLevel?.(post)
+            }}
+            title={isManualLevel ? '手动评分，点击修改' : 'AI 评分，点击修改'}
+            className={cn(
+              'absolute bottom-2 right-2 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm tabular-nums',
+              isManualLevel ? 'bg-[#0A84FF]/80' : 'bg-black/55'
+            )}
+          >
+            {level}
+          </button>
         )}
         {selectMode && (
           <>

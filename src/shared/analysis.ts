@@ -105,9 +105,60 @@ export interface AnalysisRunMeta {
   elapsedMs: number
 }
 
+/**
+ * 「AI 理解」的人工修订：只存被改过的字段，读的时候盖在 AI 结果上。
+ * 字段全是可选的 —— 没写进这里的继续跟着 AI 走，所以重新分析后依然能拿到新的章节 / 评分。
+ */
+export interface AnalysisOverride {
+  summary?: string
+  content?: string
+  category?: { primary?: string; secondary?: string }
+  setting?: { location?: string; place?: string; timeOfDay?: string }
+  subjects?: { peopleCount?: string; appearance?: string[]; outfit?: string[] }
+  actions?: string[]
+  style?: string[]
+  onScreenText?: string[]
+  speechTopics?: string[]
+}
+
+/** 把人工修订盖到 AI 结果上；这里用 ??，空串和空数组都算「用户改成了空」 */
+export function applyAnalysisOverride(
+  analysis: VideoAnalysis,
+  override: AnalysisOverride
+): VideoAnalysis {
+  return {
+    ...analysis,
+    summary: override.summary ?? analysis.summary,
+    content: override.content ?? analysis.content,
+    category: {
+      primary: override.category?.primary ?? analysis.category.primary,
+      secondary: override.category?.secondary ?? analysis.category.secondary
+    },
+    setting: {
+      location: override.setting?.location ?? analysis.setting.location,
+      place: override.setting?.place ?? analysis.setting.place,
+      timeOfDay: override.setting?.timeOfDay ?? analysis.setting.timeOfDay
+    },
+    subjects: {
+      peopleCount: override.subjects?.peopleCount ?? analysis.subjects.peopleCount,
+      appearance: override.subjects?.appearance ?? analysis.subjects.appearance,
+      outfit: override.subjects?.outfit ?? analysis.subjects.outfit
+    },
+    actions: override.actions ?? analysis.actions,
+    style: override.style ?? analysis.style,
+    onScreenText: override.onScreenText ?? analysis.onScreenText,
+    speechTopics: override.speechTopics ?? analysis.speechTopics
+  }
+}
+
 /** 渲染端取单条作品分析详情的返回 */
 export interface PostAnalysisDetail {
+  /** 已盖上人工修订的结果，页面展示用 */
   analysis: VideoAnalysis | null
+  /** AI 原始结果（未盖修订）：编辑框据此判断哪些项被改过 */
+  ai: VideoAnalysis | null
+  /** 人工修订；null 表示没改过 */
+  manual: AnalysisOverride | null
   meta: (AnalysisRunMeta & { createdAt: number }) | null
   transcript: PostTranscript | null
 }

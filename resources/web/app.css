@@ -140,6 +140,8 @@ input { border: none; outline: none; background: none; }
   padding: calc(var(--safe-top) + 12px) 14px 6px;
   display: flex;
   justify-content: center;
+  align-items: center;
+  gap: 12px;
 }
 
 .top-bar-pill {
@@ -175,6 +177,37 @@ input { border: none; outline: none; background: none; }
   font-weight: 700;
   letter-spacing: -0.01em;
 }
+
+/* ── 悬停播放开关（顶栏右侧独立的玻璃胶囊） ── */
+.hover-pill {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 56px;
+  padding: 0 20px;
+  border-radius: var(--r-pill);
+  font-size: 13px;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: all 200ms;
+}
+
+.hover-pill svg { opacity: 0.7; }
+
+.hover-pill:hover { color: var(--text); }
+
+.hover-pill[aria-pressed="true"] {
+  background: linear-gradient(135deg, rgba(155, 135, 255, 0.85), rgba(255, 176, 136, 0.85));
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 4px 16px rgba(155, 135, 255, 0.4);
+}
+
+.hover-pill[aria-pressed="true"] svg { opacity: 1; }
+
+/* .glass 的 display 会盖掉 [hidden]，触摸设备上藏这个开关得靠这条 */
+#previewToggle[hidden] { display: none; }
 
 .search {
   flex: 1;
@@ -253,6 +286,8 @@ input { border: none; outline: none; background: none; }
 @media (max-width: 560px) {
   .sort-pill { padding: 0 12px; }
   .sort-pill span { display: none; }
+  .hover-pill { padding: 0 12px; }
+  .hover-pill span { display: none; }
 }
 
 /* 排序菜单：绝对定位挂在顶栏胶囊下方（胶囊已设 position: relative） */
@@ -304,52 +339,6 @@ input { border: none; outline: none; background: none; }
   content: '✓';
   font-size: 12px;
   color: #a48bff;
-}
-
-/* ── Author bar ── */
-.author-bar {
-  position: relative;
-  z-index: 5;
-  flex-shrink: 0;
-  padding: 8px 14px 4px;
-  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
-          mask-image: linear-gradient(90deg, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
-}
-
-.author-scroll {
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scroll-padding: 0 14px;
-}
-
-.author-scroll::-webkit-scrollbar { display: none; }
-
-.author-tab {
-  flex-shrink: 0;
-  height: 34px;
-  padding: 0 14px;
-  border-radius: var(--r-pill);
-  font-size: 13px;
-  color: var(--text-2);
-  white-space: nowrap;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  transition: all 200ms;
-}
-
-.author-tab:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--text);
-}
-
-.author-tab.is-active {
-  background: rgba(255, 255, 255, 0.92);
-  border-color: rgba(255, 255, 255, 0.92);
-  color: #0c0b18;
-  font-weight: 600;
-  box-shadow: 0 4px 14px rgba(255, 255, 255, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.6);
 }
 
 /* ── Grid ── */
@@ -427,6 +416,20 @@ input { border: none; outline: none; background: none; }
 }
 
 .grid-item:hover .grid-cover { transform: scale(1.06); }
+
+/* 悬停预览：垫在封面之上、作者/描述条之下，pointer-events 关掉让鼠标行为和封面一致 */
+.grid-preview {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 220ms ease;
+}
+
+.grid-item.is-previewing .grid-preview { opacity: 1; }
 
 .grid-info {
   position: absolute;
@@ -876,7 +879,7 @@ input { border: none; outline: none; background: none; }
 @media (min-width: 900px) {
   .top-bar { padding: calc(var(--safe-top) + 18px) 28px 10px; }
   .top-bar-pill { height: 60px; }
-  .author-bar { padding: 12px 28px 4px; max-width: 1240px; margin: 0 auto; width: 100%; }
+  .hover-pill { height: 60px; }
   .grid {
     grid-template-columns: repeat(4, 1fr);
     gap: 22px;
@@ -900,12 +903,10 @@ input { border: none; outline: none; background: none; }
     padding: 24px 40px calc(48px + var(--safe-bottom));
     max-width: 1480px;
   }
-  .author-bar { max-width: 1480px; padding: 14px 40px 4px; }
 }
 
 @media (min-width: 1680px) {
   .grid { max-width: 1640px; }
-  .author-bar { max-width: 1640px; }
 }
 
 .story[data-type="video"] .story-copy {

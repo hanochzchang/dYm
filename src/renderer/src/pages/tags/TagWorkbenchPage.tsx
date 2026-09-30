@@ -1,13 +1,24 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
-import { Library, Search, CheckSquare, Trash2, RotateCw, Plus, X } from 'lucide-react'
+import {
+  Library,
+  Search,
+  CheckSquare,
+  Trash2,
+  RotateCw,
+  Plus,
+  X,
+  PanelLeftClose,
+  PanelLeftOpen
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { ClearTagsDialog } from './ClearTagsDialog'
 import { ReanalyzeProgressDialog } from './ReanalyzeProgressDialog'
 import { AddTagsDialog } from './AddTagsDialog'
+import { SetContentLevelDialog } from './SetContentLevelDialog'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { StatCard } from './components/StatCard'
 import { FilterSection, FilterRow } from './components/FilterSection'
@@ -111,6 +122,11 @@ export default function TagWorkbenchPage(): React.JSX.Element {
     [panelPrefs, updatePanelPrefs]
   )
 
+  const togglePanel = useCallback(
+    () => updatePanelPrefs({ ...panelPrefs, panelCollapsed: !panelPrefs.panelCollapsed }),
+    [panelPrefs, updatePanelPrefs]
+  )
+
   const moveSection = useCallback(
     (id: FilterSectionId, delta: -1 | 1) => {
       const from = panelPrefs.order.indexOf(id)
@@ -147,6 +163,7 @@ export default function TagWorkbenchPage(): React.JSX.Element {
   const [clearOpen, setClearOpen] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
   const [reanalyzeIds, setReanalyzeIds] = useState<number[] | null>(null)
+  const [levelTarget, setLevelTarget] = useState<DbPost | null>(null)
 
   // 搜索框本地状态 + 防抖写回 URL，避免每个字符都触发查询
   const [searchDraft, setSearchDraft] = useState(keyword)
@@ -529,15 +546,29 @@ export default function TagWorkbenchPage(): React.JSX.Element {
         )}
 
         <div className="flex-1 min-h-0 flex gap-5">
-          {/* ── 左侧筛选栏 ── */}
-          <aside className="w-60 shrink-0 rounded-xl bg-white shadow-sm ring-1 ring-black/[0.04] flex flex-col overflow-hidden">
+          {/* ── 左侧筛选栏（可整栏收起，状态存 panel-prefs） ── */}
+          <aside
+            className={cn(
+              'w-60 shrink-0 rounded-xl bg-white shadow-sm ring-1 ring-black/[0.04] flex-col overflow-hidden',
+              panelPrefs.panelCollapsed ? 'hidden' : 'flex'
+            )}
+          >
             <div className="flex items-center justify-between px-4 py-3 border-b border-[#F0F0F2] shrink-0">
               <span className="text-sm font-medium text-[#1D1D1F]">筛选</span>
-              {activeFilterCount > 0 && (
-                <button onClick={clearAll} className="text-xs text-[#0A84FF] hover:underline">
-                  重置（{activeFilterCount}）
+              <div className="flex items-center gap-2">
+                {activeFilterCount > 0 && (
+                  <button onClick={clearAll} className="text-xs text-[#0A84FF] hover:underline">
+                    重置（{activeFilterCount}）
+                  </button>
+                )}
+                <button
+                  onClick={togglePanel}
+                  title="收起筛选栏"
+                  className="-mr-1.5 h-8 w-8 flex items-center justify-center rounded-md text-[#A1A1A6] hover:bg-[#F2F2F4] hover:text-[#1D1D1F] transition-colors"
+                >
+                  <PanelLeftClose className="h-4 w-4" />
                 </button>
-              )}
+              </div>
             </div>
 
             <div className="flex-1 overflow-y-auto px-3 pb-3">
@@ -752,6 +783,17 @@ export default function TagWorkbenchPage(): React.JSX.Element {
           <div className="flex-1 min-w-0 rounded-xl bg-white shadow-sm ring-1 ring-black/[0.04] flex flex-col overflow-hidden">
             <div className="flex items-center justify-between gap-4 px-5 py-3.5 border-b border-[#F0F0F2] shrink-0">
               <div className="flex items-center gap-2 min-w-0">
+                {panelPrefs.panelCollapsed && (
+                  <Button variant="outline" size="sm" onClick={togglePanel} className="shrink-0">
+                    <PanelLeftOpen className="h-4 w-4 mr-1.5" />
+                    筛选
+                    {activeFilterCount > 0 && (
+                      <span className="ml-1.5 rounded-full bg-[#0A84FF] px-1.5 text-[10px] font-semibold text-white tabular-nums">
+                        {activeFilterCount}
+                      </span>
+                    )}
+                  </Button>
+                )}
                 <span className="text-sm font-medium text-[#1D1D1F] whitespace-nowrap tabular-nums">
                   {total} 个视频
                 </span>
@@ -818,6 +860,7 @@ export default function TagWorkbenchPage(): React.JSX.Element {
                     highlightTags={filters.tags}
                     onClick={handleCardClick}
                     onToggleSelect={toggleSelect}
+                    onSetLevel={setLevelTarget}
                   />
                 ))}
               </div>
@@ -865,6 +908,14 @@ export default function TagWorkbenchPage(): React.JSX.Element {
         onOpenChange={(o) => !o && setReanalyzeIds(null)}
         postIds={reanalyzeIds || []}
         onDone={refresh}
+      />
+      <SetContentLevelDialog
+        open={levelTarget !== null}
+        onOpenChange={(o) => !o && setLevelTarget(null)}
+        postId={levelTarget?.id ?? null}
+        aiLevel={levelTarget?.analysis_content_level ?? null}
+        manualLevel={levelTarget?.manual_content_level ?? null}
+        onSaved={refresh}
       />
     </div>
   )

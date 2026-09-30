@@ -39,6 +39,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { getAvatarUrl } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { formatCompactNumber } from '@/lib/format'
+import { isLocalAuthorSecUid } from '@shared/local-post'
 
 // 同步计划常用预设，点一下直接填入，省得每次手写 cron
 const SYNC_CRON_PRESETS: { label: string; value: string }[] = [
@@ -359,16 +360,18 @@ export default function UsersPage() {
   }
 
   const handleBatchRefresh = async () => {
-    if (users.length === 0) {
+    // 合成作者（本地导入）在抖音上不存在，刷新只会报失败，直接跳过
+    const refreshable = users.filter((u) => !isLocalAuthorSecUid(u.sec_uid))
+    if (refreshable.length === 0) {
       toast.error('没有可刷新的用户')
       return
     }
 
     setBatchRefreshing(true)
-    toast.info(`开始刷新 ${users.length} 个用户...`)
+    toast.info(`开始刷新 ${refreshable.length} 个用户...`)
 
     try {
-      const usersToRefresh = users.map((u) => ({
+      const usersToRefresh = refreshable.map((u) => ({
         id: u.id,
         homepage_url: u.homepage_url,
         nickname: u.nickname
@@ -809,38 +812,43 @@ export default function UsersPage() {
                   />
                 </div>
                 <div className="w-44 flex justify-end gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
-                  {syncingUserIds.has(user.id) ? (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 text-[#0A84FF] hover:text-[#0A84FF]"
-                      onClick={() => handleStopSync(user.id)}
-                      title="停止同步"
-                    >
-                      <Square className="h-4 w-4" />
-                    </Button>
-                  ) : (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 text-[#6E6E73] hover:text-green-600"
-                      onClick={() => handleStartSync(user)}
-                      title="开始同步"
-                    >
-                      <Play className="h-4 w-4" />
-                    </Button>
+                  {/* 本地导入造出来的合成作者在抖音上不存在，同步/主页/刷新对它都没有意义 */}
+                  {!isLocalAuthorSecUid(user.sec_uid) && (
+                    <>
+                      {syncingUserIds.has(user.id) ? (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-[#0A84FF] hover:text-[#0A84FF]"
+                          onClick={() => handleStopSync(user.id)}
+                          title="停止同步"
+                        >
+                          <Square className="h-4 w-4" />
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-[#6E6E73] hover:text-green-600"
+                          onClick={() => handleStartSync(user)}
+                          title="开始同步"
+                        >
+                          <Play className="h-4 w-4" />
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-[#6E6E73] hover:text-[#0A84FF]"
+                        onClick={() =>
+                          window.api.system.openInAppBrowser(user.homepage_url, user.nickname)
+                        }
+                        title="打开主页"
+                      >
+                        <ExternalLink className="h-4 w-4" />
+                      </Button>
+                    </>
                   )}
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 text-[#6E6E73] hover:text-[#0A84FF]"
-                    onClick={() =>
-                      window.api.system.openInAppBrowser(user.homepage_url, user.nickname)
-                    }
-                    title="打开主页"
-                  >
-                    <ExternalLink className="h-4 w-4" />
-                  </Button>
                   <Button
                     variant="ghost"
                     size="icon"
@@ -850,18 +858,20 @@ export default function UsersPage() {
                   >
                     <Pencil className="h-4 w-4" />
                   </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 text-[#6E6E73] hover:text-[#1D1D1F]"
-                    onClick={() => handleRefresh(user)}
-                    disabled={refreshingId === user.id}
-                    title="刷新信息"
-                  >
-                    <RefreshCw
-                      className={`h-4 w-4 ${refreshingId === user.id ? 'animate-spin' : ''}`}
-                    />
-                  </Button>
+                  {!isLocalAuthorSecUid(user.sec_uid) && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-[#6E6E73] hover:text-[#1D1D1F]"
+                      onClick={() => handleRefresh(user)}
+                      disabled={refreshingId === user.id}
+                      title="刷新信息"
+                    >
+                      <RefreshCw
+                        className={`h-4 w-4 ${refreshingId === user.id ? 'animate-spin' : ''}`}
+                      />
+                    </Button>
+                  )}
                   <Button
                     variant="ghost"
                     size="icon"

@@ -128,6 +128,10 @@ export function initDatabase(): void {
   ensureColumn(database, 'posts', 'analyzed_at', 'INTEGER')
   // 手动标签：与 analysis_tags 同为 JSON 字符串数组格式，默认 NULL
   ensureColumn(database, 'posts', 'manual_tags', 'TEXT')
+  // 手动内容等级（1-10）：非 NULL 时压过 AI 的 analysis_content_level
+  ensureColumn(database, 'posts', 'manual_content_level', 'INTEGER')
+  // 人工修订的「AI 理解」文本（JSON，只存改过的项）：读时盖在 AI 结果上
+  ensureColumn(database, 'posts', 'manual_analysis', 'TEXT')
   // 模型原始输出（JSON 文本）与所用模型：换提示词 / 换模型后可以离线重新解析、对比
   ensureColumn(database, 'posts', 'analysis_raw', 'TEXT')
   ensureColumn(database, 'posts', 'analysis_model', 'TEXT')

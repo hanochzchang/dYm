@@ -14,7 +14,7 @@ import type {
   OpenCodeCliKey,
   CreateAnalysisJobInput
 } from '../shared/ai'
-import type { PostAnalysisDetail } from '../shared/analysis'
+import type { AnalysisOverride, PostAnalysisDetail } from '../shared/analysis'
 
 declare global {
   interface DatabaseAPI {
@@ -424,6 +424,7 @@ declare global {
     analysis_content_level: number | null
     analyzed_at: number | null
     manual_tags: string | null
+    manual_content_level: number | null
     analysis_raw: string | null
     analysis_model: string | null
   }
@@ -484,6 +485,8 @@ declare global {
     scanBroken: () => Promise<BrokenPostInfo[]>
     redownload: (awemeId: string) => Promise<{ success: boolean; message: string }>
     batchRedownload: (awemeIds: string[]) => Promise<{ success: number; failed: number }>
+    /** 手动内容等级（1-10）；传 null 清回 AI 分 */
+    setContentLevel: (postId: number, level: number | null) => Promise<void>
   }
 
   interface UnanalyzedUserCount {
@@ -539,6 +542,8 @@ declare global {
     getSettings: () => Promise<AnalysisSettings>
     /** 单条作品的结构化分析、元信息与字幕 */
     getDetail: (postId: number) => Promise<PostAnalysisDetail>
+    /** 人工修订「AI 理解」的文本字段（只存改过的项）；传 null 清回 AI 原值 */
+    setOverride: (postId: number, override: AnalysisOverride | null) => Promise<void>
     /** 字幕全文检索 */
     searchTranscripts: (
       keyword: string,
@@ -679,6 +684,29 @@ declare global {
     downloadToFolder: (info: VideoInfo) => Promise<void>
   }
 
+  interface LocalImportInput {
+    /** video = 一个视频作品；images = 选中的图片合成一个图集作品 */
+    kind: 'video' | 'images'
+    paths: string[]
+    desc?: string
+    authorName?: string
+    /** datetime-local 控件的值（2026-01-05T14:30），留空用当前时间 */
+    createTime?: string
+  }
+
+  interface LocalImportResult {
+    awemeId: string
+    /** true = 库里已有同一份内容，没有重复导入 */
+    skipped: boolean
+    postId?: number
+  }
+
+  interface LocalImportAPI {
+    /** 弹系统文件选择框；视频单选、图片多选（组成一个图集）。取消返回 [] */
+    pick: (kind: 'video' | 'images') => Promise<string[]>
+    start: (input: LocalImportInput) => Promise<LocalImportResult>
+  }
+
   interface SystemResourceInfo {
     cpuUsage: number // 0-100
     memoryUsage: number // 0-100
@@ -697,30 +725,10 @@ declare global {
   interface SystemAPI {
     getResourceUsage: () => Promise<SystemResourceInfo>
     getWebServerInfo: () => Promise<WebServerInfo>
+    getAppVersion: () => Promise<string>
     openDirectoryDialog: () => Promise<string | null>
     openDataDirectory: () => Promise<void>
     openInAppBrowser: (url: string, title?: string) => Promise<void>
-  }
-
-  interface UpdateInfo {
-    version: string
-    releaseDate?: string
-    releaseNotes?: string
-  }
-
-  interface UpdateStatus {
-    status: 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
-    info?: UpdateInfo
-    progress?: number
-    error?: string
-  }
-
-  interface UpdaterAPI {
-    check: () => Promise<UpdateInfo | undefined>
-    download: () => Promise<void>
-    install: () => void
-    getCurrentVersion: () => Promise<string>
-    onStatus: (callback: (status: UpdateStatus) => void) => () => void
   }
 
   interface MigrationResult {
@@ -809,8 +817,8 @@ declare global {
     analysis: AnalysisAPI
     tag: TagAPI
     video: VideoAPI
+    localImport: LocalImportAPI
     system: SystemAPI
-    updater: UpdaterAPI
     migration: MigrationAPI
     clipboard: ClipboardAPI
     files: FilesAPI

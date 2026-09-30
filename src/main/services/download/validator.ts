@@ -116,11 +116,12 @@ export function checkPostFileIntegrity(
     }
   }
 
-  // Video types need .mp4
+  // Video types need a playable video file. 判据与 findMediaFiles 一致：
+  // 本地导入可以带 .mov / .avi（抖音下载只会是 .mp4），只认 .mp4 会把它们误报成损坏
   if ([0, 4, 55, 61, 109, 201].includes(awemeType)) {
-    const hasVideo = files.some((f) => f.endsWith('.mp4'))
+    const hasVideo = files.some((f) => /\.(mp4|mov|avi)$/i.test(f))
     if (!hasVideo) {
-      return { valid: false, reason: '缺少视频文件 (.mp4)' }
+      return { valid: false, reason: '缺少视频文件 (.mp4/.mov/.avi)' }
     }
   }
 

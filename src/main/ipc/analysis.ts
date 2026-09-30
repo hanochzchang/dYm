@@ -15,6 +15,7 @@ import {
   addTagsToPosts,
   getPostById,
   getPostAnalysisDetail,
+  setPostAnalysisOverride,
   searchTranscripts,
   setPostTags,
   clearTags,
@@ -65,6 +66,7 @@ import type {
   AnalysisSettings,
   CreateAnalysisJobInput
 } from '../../shared/ai'
+import type { AnalysisOverride } from '../../shared/analysis'
 import { track } from '../services/telemetry'
 
 export function registerAnalysisIpc(): void {
@@ -123,6 +125,15 @@ export function registerAnalysisIpc(): void {
   ipcMain.handle('analysis:getUnanalyzedCountByUser', () => getUnanalyzedPostsCountByUser())
   ipcMain.handle('analysis:getUserStats', () => getUserAnalysisStats())
   ipcMain.handle('analysis:getDetail', (_event, postId: number) => getPostAnalysisDetail(postId))
+  ipcMain.handle(
+    'analysis:setOverride',
+    (_event, postId: number, override: AnalysisOverride | null) => {
+      if (override !== null && (typeof override !== 'object' || Array.isArray(override))) {
+        throw new Error('人工修订必须是对象或 null')
+      }
+      setPostAnalysisOverride(postId, override)
+    }
+  )
   ipcMain.handle('analysis:searchTranscripts', (_event, keyword: string, limit?: number) =>
     searchTranscripts(String(keyword ?? ''), limit)
   )

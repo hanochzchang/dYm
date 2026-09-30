@@ -16,10 +16,12 @@ import {
   batchReplacePaths,
   getPostsByUserIdAll,
   deletePostByAwemeId,
+  setManualContentLevel,
   type PostFilters,
   type PostSortConfig
 } from '../database'
 import { findCoverFile, findMediaFiles, getDownloadPath } from '../services/media'
+import { isLocalAwemeId } from '../../shared/local-post'
 import { assertFolderName, assertSecUid } from '../utils/path-segment'
 import { checkPostFileIntegrity, cleanupFailedDownload } from '../services/download/validator'
 
@@ -134,6 +136,13 @@ export function registerPostIpc(): void {
     return total
   })
 
+  ipcMain.handle('post:setContentLevel', (_event, postId: number, level: number | null) => {
+    if (level !== null && (!Number.isInteger(level) || level < 1 || level > 10)) {
+      throw new Error('内容等级必须是 1-10 的整数')
+    }
+    setManualContentLevel(postId, level)
+  })
+
   ipcMain.handle('files:deletePost', async (_event, postId: number) => {
     const post = getPostById(postId)
     if (!post) return false
@@ -194,6 +203,10 @@ export function registerPostIpc(): void {
   })
 
   ipcMain.handle('post:redownload', async (_event, awemeId: string) => {
+    // 这一步会先删记录、指望下次同步从抖音拉回来；导入的本地作品没有抖音来源，
+    // 放行等于永久丢记录 + 丢文件，所以主进程也拦一道（渲染端已隐藏该入口）
+    if (isLocalAwemeId(awemeId)) throw new Error('本地导入的作品没有抖音来源，无法重新下载')
+
     const post = deletePostByAwemeId(awemeId)
     if (!post) throw new Error('作品记录不存在')
 
@@ -216,6 +229,8 @@ export function registerPostIpc(): void {
     let failed = 0
 
     for (const awemeId of awemeIds) {
+      // 导入的本地作品没有抖音来源，删了拉不回来，直接跳过
+      if (isLocalAwemeId(awemeId)) continue
       try {
         const post = deletePostByAwemeId(awemeId)
         if (!post) {

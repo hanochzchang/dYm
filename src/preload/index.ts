@@ -16,7 +16,7 @@ import type {
   OpenCodeCliKey,
   CreateAnalysisJobInput
 } from '../shared/ai'
-import type { PostAnalysisDetail } from '../shared/analysis'
+import type { AnalysisOverride, PostAnalysisDetail } from '../shared/analysis'
 
 const dbAPI = {
   execute: (sql: string, params?: unknown[]): Promise<unknown> =>
@@ -194,7 +194,9 @@ const postAPI = {
   redownload: (awemeId: string): Promise<{ success: boolean; message: string }> =>
     ipcRenderer.invoke('post:redownload', awemeId),
   batchRedownload: (awemeIds: string[]): Promise<{ success: number; failed: number }> =>
-    ipcRenderer.invoke('post:batchRedownload', awemeIds)
+    ipcRenderer.invoke('post:batchRedownload', awemeIds),
+  setContentLevel: (postId: number, level: number | null): Promise<void> =>
+    ipcRenderer.invoke('post:setContentLevel', postId, level)
 }
 
 const aiAPI = {
@@ -236,6 +238,8 @@ const analysisAPI = {
   getSettings: (): Promise<AnalysisSettings> => ipcRenderer.invoke('analysis:getSettings'),
   getDetail: (postId: number): Promise<PostAnalysisDetail> =>
     ipcRenderer.invoke('analysis:getDetail', postId),
+  setOverride: (postId: number, override: AnalysisOverride | null): Promise<void> =>
+    ipcRenderer.invoke('analysis:setOverride', postId, override),
   searchTranscripts: (
     keyword: string,
     limit?: number
@@ -317,10 +321,17 @@ const videoAPI = {
     ipcRenderer.invoke('video:downloadToFolder', info)
 }
 
+const localImportAPI = {
+  pick: (kind: 'video' | 'images'): Promise<string[]> => ipcRenderer.invoke('import:pick', kind),
+  start: (input: LocalImportInput): Promise<LocalImportResult> =>
+    ipcRenderer.invoke('import:start', input)
+}
+
 const systemAPI = {
   getResourceUsage: (): Promise<SystemResourceInfo> =>
     ipcRenderer.invoke('system:getResourceUsage'),
   getWebServerInfo: (): Promise<WebServerInfo> => ipcRenderer.invoke('system:getWebServerInfo'),
+  getAppVersion: (): Promise<string> => ipcRenderer.invoke('system:getAppVersion'),
   openDirectoryDialog: (): Promise<string | null> => ipcRenderer.invoke('dialog:openDirectory'),
   openDataDirectory: (): Promise<void> => ipcRenderer.invoke('system:openDataDirectory'),
   openInAppBrowser: (url: string, title?: string): Promise<void> =>
@@ -341,21 +352,6 @@ const clipboardAPI = {
     const handler = (_event: Electron.IpcRendererEvent, link: string): void => callback(link)
     ipcRenderer.on('clipboard-douyin-link', handler)
     return () => ipcRenderer.removeListener('clipboard-douyin-link', handler)
-  }
-}
-
-const updaterAPI = {
-  check: (): Promise<UpdateInfo | undefined> => ipcRenderer.invoke('updater:check'),
-  download: (): Promise<void> => ipcRenderer.invoke('updater:download'),
-  install: (): void => {
-    ipcRenderer.invoke('updater:install')
-  },
-  getCurrentVersion: (): Promise<string> => ipcRenderer.invoke('updater:getCurrentVersion'),
-  onStatus: (callback: (status: UpdateStatus) => void): (() => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, status: UpdateStatus): void =>
-      callback(status)
-    ipcRenderer.on('updater:status', handler)
-    return () => ipcRenderer.removeListener('updater:status', handler)
   }
 }
 
@@ -453,8 +449,8 @@ const api = {
   analysis: analysisAPI,
   tag: tagAPI,
   video: videoAPI,
+  localImport: localImportAPI,
   system: systemAPI,
-  updater: updaterAPI,
   migration: migrationAPI,
   clipboard: clipboardAPI,
   files: filesAPI,

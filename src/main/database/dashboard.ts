@@ -89,8 +89,9 @@ export function getContentLevelDistribution(): LevelDistItem[] {
   const database = getDatabase()
   return database
     .prepare(
-      `SELECT analysis_content_level as level, COUNT(*) as count
-       FROM posts WHERE analyzed_at IS NOT NULL AND analysis_content_level IS NOT NULL
+      // 生效等级：手动分压过 AI 分。手动分允许在未分析时就给，故不再要求 analyzed_at
+      `SELECT COALESCE(manual_content_level, analysis_content_level) as level, COUNT(*) as count
+       FROM posts WHERE COALESCE(manual_content_level, analysis_content_level) IS NOT NULL
        GROUP BY level ORDER BY level`
     )
     .all() as LevelDistItem[]
