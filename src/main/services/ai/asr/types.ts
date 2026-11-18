@@ -38,3 +38,11 @@ export interface AsrClient {
   /** 用一小段合成音频做最小代价的连通性验证 */
   verify(): Promise<void>
 }
+
+/** 转写配置本身有问题（exe / 模型路径不对）：换一条作品也只会同样失败，直接让条目报错 */
+export class AsrConfigError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'AsrConfigError'
+  }
+}

@@ -20,7 +20,8 @@ import {
   Clock,
   ExternalLink,
   Search,
-  SlidersHorizontal
+  SlidersHorizontal,
+  EyeOff
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -36,6 +37,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
+import { AuthorPostsDialog } from '@/components/media/AuthorPostsDialog'
 import { getAvatarUrl } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { formatCompactNumber } from '@/lib/format'
@@ -87,12 +89,14 @@ function CronPresetRow({
   )
 }
 
-type SortOption = 'default' | 'undownloaded' | 'total'
-type ShowInHomeFilter = 'all' | 'yes' | 'no'
+type SortOption = 'default' | 'downloaded' | 'undownloaded' | 'total'
+type ShowInHomeFilter = 'all' | 'hidden' | 'visible'
 type AutoSyncFilter = 'all' | 'yes' | 'no'
 type DownloadStatusFilter = 'all' | 'completed' | 'partial' | 'none'
 
 export default function UsersPage() {
+  // 就地弹出该作者的作品（不跳页，保住当前筛选/页码/滚动）
+  const [viewingUser, setViewingUser] = useState<DbUser | null>(null)
   const [users, setUsers] = useState<DbUser[]>([])
   const [open, setOpen] = useState(false)
   const [url, setUrl] = useState('')
@@ -202,10 +206,10 @@ export default function UsersPage() {
       )
     }
 
-    // 首页显示筛选
+    // 隐藏筛选（show_in_home = 0 即已隐藏）
     if (showInHomeFilter !== 'all') {
       result = result.filter((u) =>
-        showInHomeFilter === 'yes' ? !!u.show_in_home : !u.show_in_home
+        showInHomeFilter === 'hidden' ? !u.show_in_home : !!u.show_in_home
       )
     }
 
@@ -230,7 +234,9 @@ export default function UsersPage() {
     }
 
     // 排序
-    if (sortBy === 'undownloaded') {
+    if (sortBy === 'downloaded') {
+      result = [...result].sort((a, b) => b.downloaded_count - a.downloaded_count)
+    } else if (sortBy === 'undownloaded') {
       result = [...result].sort((a, b) => {
         const aUndownloaded = a.aweme_count - a.downloaded_count
         const bUndownloaded = b.aweme_count - b.downloaded_count
@@ -333,8 +339,19 @@ export default function UsersPage() {
   const handleRefresh = async (user: DbUser) => {
     setRefreshingId(user.id)
     try {
-      await window.api.user.refresh(user.id)
-      toast.success('用户信息已更新')
+      const updated = await window.api.user.refresh(user.id)
+      if (updated.nickname !== user.nickname) {
+        toast.success(`昵称已更新：${user.nickname} → ${updated.nickname}`)
+      } else {
+        toast.success('用户信息已更新')
+      }
+      // 按旧名字搜索时，改名会让卡片从结果里消失；把搜索词跟随成新昵称
+      const term = searchTerm.trim().toLowerCase()
+      if (term) {
+        const matches = (u: DbUser): boolean =>
+          [u.nickname, u.unique_id, u.short_id].some((v) => v?.toLowerCase().includes(term))
+        if (matches(user) && !matches(updated)) setSearchTerm(updated.nickname)
+      }
       loadUsers()
     } catch {
       toast.error('更新失败')
@@ -663,24 +680,24 @@ export default function UsersPage() {
                   className="h-10 w-full pl-9 border-[#E5E5E7] text-sm"
                 />
               </div>
-              <div className="flex items-center gap-2 text-xs text-[#6E6E73]">
-                <SlidersHorizontal className="h-4 w-4" />
-                <span className="font-medium">筛选条件</span>
-              </div>
             </div>
           </div>
 
           {/* Filter Row */}
           <div className="border-b border-[#E5E5E7] px-5 py-3 bg-[#F5F5F7]/60">
             <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1.5 mr-1 text-xs text-[#6E6E73]">
+                <SlidersHorizontal className="h-4 w-4" />
+                <span className="font-medium">筛选条件</span>
+              </div>
               <select
                 value={showInHomeFilter}
                 onChange={(e) => setShowInHomeFilter(e.target.value as ShowInHomeFilter)}
                 className="h-9 px-3 text-xs border border-[#E5E5E7] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#0A84FF]/20"
               >
-                <option value="all">首页显示: 全部</option>
-                <option value="yes">首页显示: 是</option>
-                <option value="no">首页显示: 否</option>
+                <option value="all">隐藏: 全部</option>
+                <option value="hidden">隐藏: 已隐藏</option>
+                <option value="visible">隐藏: 未隐藏</option>
               </select>
               <select
                 value={autoSyncFilter}
@@ -707,6 +724,7 @@ export default function UsersPage() {
                 className="h-9 px-3 text-xs border border-[#E5E5E7] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-[#0A84FF]/20"
               >
                 <option value="default">排序: 默认</option>
+                <option value="downloaded">排序: 已下载数</option>
                 <option value="undownloaded">排序: 未下载数</option>
                 <option value="total">排序: 总作品数</option>
               </select>
@@ -728,7 +746,7 @@ export default function UsersPage() {
             <div className="w-32 text-center">下载进度</div>
             <div className="w-16 text-center">限制</div>
             <div className="w-24 text-center">同步</div>
-            <div className="w-20 text-center">首页</div>
+            <div className="w-20 text-center">隐藏</div>
             <div className="w-44 text-right">操作</div>
           </div>
 
@@ -754,14 +772,39 @@ export default function UsersPage() {
                   />
                 </div>
                 <div className="flex-1 flex items-center gap-3">
-                  <Avatar className="h-10 w-10">
-                    <AvatarImage src={getAvatarUrl(user)} className="object-cover" />
-                    <AvatarFallback className="bg-[#E8F0FE] text-[#0A84FF]">
-                      {user.nickname?.charAt(0).toUpperCase() || 'U'}
-                    </AvatarFallback>
-                  </Avatar>
+                  <button
+                    type="button"
+                    onClick={() => setViewingUser(user)}
+                    className="shrink-0 rounded-full hover:ring-2 hover:ring-[#0A84FF]/40 transition-shadow cursor-pointer"
+                    title={`在视频库中查看 @${user.nickname} 的作品`}
+                  >
+                    <Avatar className="h-10 w-10">
+                      <AvatarImage src={getAvatarUrl(user)} className="object-cover" />
+                      <AvatarFallback className="bg-[#E8F0FE] text-[#0A84FF]">
+                        {user.nickname?.charAt(0).toUpperCase() || 'U'}
+                      </AvatarFallback>
+                    </Avatar>
+                  </button>
                   <div className="min-w-0">
-                    <p className="font-medium text-[#1D1D1F] truncate">{user.nickname}</p>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setViewingUser(user)}
+                        className="font-medium text-[#1D1D1F] truncate text-left hover:text-[#0A84FF] hover:underline transition-colors cursor-pointer"
+                        title={`在视频库中查看 @${user.nickname} 的作品`}
+                      >
+                        {user.nickname}
+                      </button>
+                      {!user.show_in_home && (
+                        <Badge
+                          variant="outline"
+                          className="shrink-0 text-xs border-[#A1A1A6] text-[#6E6E73]"
+                        >
+                          <EyeOff className="h-3 w-3 mr-1" />
+                          已隐藏
+                        </Badge>
+                      )}
+                    </div>
                     <p className="text-xs text-[#A1A1A6] truncate">
                       @{user.unique_id || user.short_id || '-'}
                     </p>
@@ -807,8 +850,9 @@ export default function UsersPage() {
                 </div>
                 <div className="w-20 flex justify-center">
                   <Switch
-                    checked={!!user.show_in_home}
+                    checked={!user.show_in_home}
                     onCheckedChange={() => handleToggleShowInHome(user)}
+                    title={user.show_in_home ? '隐藏该作者的作品' : '取消隐藏'}
                   />
                 </div>
                 <div className="w-44 flex justify-end gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
@@ -1022,10 +1066,17 @@ export default function UsersPage() {
               <p className="text-xs text-muted-foreground">设为 0 则使用系统全局设置</p>
             </div>
             <div className="flex items-center justify-between">
-              <Label>在首页显示</Label>
+              <div>
+                <Label>隐藏该作者的作品</Label>
+                <p className="text-xs text-muted-foreground">
+                  隐藏后其作品在视频库、标签管理、文件页和网页端都不显示，定时同步照常
+                </p>
+              </div>
               <Switch
-                checked={editForm.show_in_home}
-                onCheckedChange={(checked) => setEditForm((f) => ({ ...f, show_in_home: checked }))}
+                checked={!editForm.show_in_home}
+                onCheckedChange={(checked) =>
+                  setEditForm((f) => ({ ...f, show_in_home: !checked }))
+                }
               />
             </div>
             <div className="border-t border-[#E5E5E7] pt-4 space-y-4">
@@ -1154,14 +1205,14 @@ export default function UsersPage() {
                   }
                 />
                 <Label className={!batchEnabled.show_in_home ? 'text-[#A1A1A6]' : ''}>
-                  在首页显示
+                  隐藏作品
                 </Label>
               </div>
               <Switch
                 disabled={!batchEnabled.show_in_home}
-                checked={batchForm.show_in_home}
+                checked={!batchForm.show_in_home}
                 onCheckedChange={(checked) =>
-                  setBatchForm((f) => ({ ...f, show_in_home: checked }))
+                  setBatchForm((f) => ({ ...f, show_in_home: !checked }))
                 }
               />
             </div>
@@ -1278,6 +1329,12 @@ export default function UsersPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AuthorPostsDialog
+        open={viewingUser !== null}
+        onOpenChange={(o) => !o && setViewingUser(null)}
+        user={viewingUser}
+      />
     </Page>
   )
 }

@@ -103,8 +103,10 @@ async function transcribeClip(
   index: number,
   ctx: TranscribeContext
 ): Promise<{ segments: TranscriptSegment[]; language: string | null }> {
+  // 本地转写没有 RPM 限制，别让限流器白白拖慢
+  const throttle = ctx.provider.protocol !== 'local-faster-whisper'
   for (let attempt = 0; ; attempt++) {
-    await ctx.limiter.wait(ctx.signal)
+    if (throttle) await ctx.limiter.wait(ctx.signal)
     try {
       const result = await ctx.client.transcribe({
         audio: clip.buffer,

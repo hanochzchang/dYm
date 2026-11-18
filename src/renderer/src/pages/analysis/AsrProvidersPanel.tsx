@@ -92,7 +92,8 @@ export function AsrProvidersPanel({ onChanged }: AsrProvidersPanelProps): React.
           <Mic className="h-10 w-10 text-[#E5E5E7] mx-auto mb-3" />
           <p className="text-sm text-[#6E6E73]">还没有配置语音转写服务</p>
           <p className="text-xs text-[#A1A1A6] mt-1 mb-4">
-            预置硅基流动、阿里百炼、智谱、阶跃、OpenAI、Groq、Mistral、Gemini 等模板
+            预置硅基流动、阿里百炼、智谱、阶跃、OpenAI、Groq、Mistral、Gemini 等模板，也支持本地
+            Faster-Whisper 离线转写
           </p>
           <Button variant="outline" onClick={openCreate}>
             <Plus className="h-4 w-4 mr-1" />
@@ -164,29 +165,46 @@ export function AsrProvidersPanel({ onChanged }: AsrProvidersPanelProps): React.
                     <dd className="font-mono text-[#1D1D1F] truncate">{p.model || '—'}</dd>
                   </div>
                   <div className="flex gap-2">
-                    <dt className="w-14 shrink-0 text-[#A1A1A6]">地址</dt>
+                    <dt className="w-14 shrink-0 text-[#A1A1A6]">
+                      {p.protocol === 'local-faster-whisper' ? '程序' : '地址'}
+                    </dt>
                     <dd className="font-mono text-[#6E6E73] truncate">{p.baseUrl}</dd>
                   </div>
+                  {p.protocol === 'local-faster-whisper' && p.extraForm.model_dir && (
+                    <div className="flex gap-2">
+                      <dt className="w-14 shrink-0 text-[#A1A1A6]">模型目录</dt>
+                      <dd className="font-mono text-[#6E6E73] truncate">{p.extraForm.model_dir}</dd>
+                    </div>
+                  )}
                   <div className="flex gap-2">
                     <dt className="w-14 shrink-0 text-[#A1A1A6]">单段上限</dt>
                     <dd className="text-[#6E6E73] tabular-nums">{p.maxClipSeconds} 秒</dd>
                   </div>
-                  <div className="flex gap-2 items-center">
-                    <dt className="w-14 shrink-0 text-[#A1A1A6]">凭据</dt>
-                    <dd className="flex items-center gap-1.5">
-                      {p.hasCredential ? (
-                        <>
-                          <KeyRound className="h-3.5 w-3.5 text-[#22C55E]" />
-                          <span className="text-[#1D1D1F]">已保存</span>
-                        </>
-                      ) : (
-                        <>
-                          <ShieldAlert className="h-3.5 w-3.5 text-[#F59E0B]" />
-                          <span className="text-[#6E6E73]">未设置</span>
-                        </>
-                      )}
-                    </dd>
-                  </div>
+                  {p.protocol === 'local-faster-whisper' ? (
+                    <div className="flex gap-2 items-center">
+                      <dt className="w-14 shrink-0 text-[#A1A1A6]">设备</dt>
+                      <dd className="text-[#6E6E73]">
+                        {(p.extraForm.device || 'cpu').toLowerCase() === 'cuda' ? 'CUDA' : 'CPU'}
+                      </dd>
+                    </div>
+                  ) : (
+                    <div className="flex gap-2 items-center">
+                      <dt className="w-14 shrink-0 text-[#A1A1A6]">凭据</dt>
+                      <dd className="flex items-center gap-1.5">
+                        {p.hasCredential ? (
+                          <>
+                            <KeyRound className="h-3.5 w-3.5 text-[#22C55E]" />
+                            <span className="text-[#1D1D1F]">已保存</span>
+                          </>
+                        ) : (
+                          <>
+                            <ShieldAlert className="h-3.5 w-3.5 text-[#F59E0B]" />
+                            <span className="text-[#6E6E73]">未设置</span>
+                          </>
+                        )}
+                      </dd>
+                    </div>
+                  )}
                 </dl>
               </div>
             )

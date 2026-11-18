@@ -2,6 +2,7 @@ import type { AsrClient, ResolvedAsrProvider } from '../types'
 import { OpenAiTranscriptionsClient } from './openai-transcriptions'
 import { OpenAiChatAudioClient } from './openai-chat-audio'
 import { GeminiAudioClient } from './gemini-audio'
+import { LocalFasterWhisperClient } from './local-faster-whisper'
 
 export function createAsrClient(provider: ResolvedAsrProvider): AsrClient {
   switch (provider.protocol) {
@@ -11,9 +12,16 @@ export function createAsrClient(provider: ResolvedAsrProvider): AsrClient {
       return new OpenAiChatAudioClient(provider)
     case 'gemini-audio':
       return new GeminiAudioClient(provider)
+    case 'local-faster-whisper':
+      return new LocalFasterWhisperClient(provider)
     default:
       throw new Error(`未知转写协议：${String(provider.protocol)}`)
   }
 }
 
-export { OpenAiTranscriptionsClient, OpenAiChatAudioClient, GeminiAudioClient }
+export {
+  OpenAiTranscriptionsClient,
+  OpenAiChatAudioClient,
+  GeminiAudioClient,
+  LocalFasterWhisperClient
+}

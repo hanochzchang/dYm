@@ -56,7 +56,8 @@ export async function loadGalleryImages(
   if (!mediaFolder) throw new Error('本地媒体目录不存在（可能已被删除或迁移）')
   const imageFiles = readdirSync(mediaFolder)
     .filter((f) => /\.(webp|jpg|jpeg|png)$/i.test(f) && !f.includes('_cover'))
-    .sort()
+    // 结尾序号按数值比，否则 _10 排在 _2 前面 —— 不只是顺序错，超 20 张时挑的前 N 张也是错的
+    .sort(new Intl.Collator(undefined, { numeric: true }).compare)
     .slice(0, Math.max(1, Math.min(20, maxImages)))
   if (!imageFiles.length) throw new Error('图集目录里没有图片文件')
   const images: VisionImage[] = []

@@ -8,6 +8,7 @@ import { registerAnalysisIpc } from './analysis'
 import { registerScriptsIpc } from './scripts'
 import { registerSystemIpc } from './system'
 import { registerImportIpc } from './import'
+import { registerXiaohongshuIpc } from './xiaohongshu'
 
 /** 注册全部 IPC handler。按领域拆分在同目录各文件里，须在 app ready 之后调用 */
 export function registerIpcHandlers(): void {
@@ -21,4 +22,5 @@ export function registerIpcHandlers(): void {
   registerScriptsIpc()
   registerSystemIpc()
   registerImportIpc()
+  registerXiaohongshuIpc()
 }

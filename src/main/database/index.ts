@@ -3,6 +3,7 @@
  * 调用方仍然 import from '../database'。
  */
 export * from './connection'
+export * from './visibility'
 export * from './schema'
 export * from './settings'
 export * from './users'

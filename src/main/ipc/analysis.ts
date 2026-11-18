@@ -14,6 +14,7 @@ import {
   getTagFilterFacets,
   addTagsToPosts,
   getPostById,
+  isAuthorVisible,
   getPostAnalysisDetail,
   setPostAnalysisOverride,
   searchTranscripts,
@@ -150,7 +151,13 @@ export function registerAnalysisIpc(): void {
   ipcMain.handle('tag:getFilterFacets', (_event, filters?: TagPostFilters) =>
     getTagFilterFacets(filters)
   )
-  ipcMain.handle('tag:getPost', (_event, postId: number) => getPostById(postId))
+  // 隐藏作者的作品不允许从标签管理详情页打开 —— 与「作品不存在」同响应。
+  // 只在 IPC 这层拦：getPostById 本身要留给 AI pipeline、脚本和下载去重。
+  ipcMain.handle('tag:getPost', (_event, postId: number) => {
+    const post = getPostById(postId)
+    if (!post || !isAuthorVisible(post.sec_uid)) return null
+    return post
+  })
   ipcMain.handle(
     'tag:queryPosts',
     (_event, filters?: TagPostFilters, page?: number, pageSize?: number) =>

@@ -1,4 +1,13 @@
-import { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from 'react'
+import {
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useMemo,
+  useCallback,
+  lazy,
+  Suspense
+} from 'react'
 import {
   ChevronLeft,
   ChevronRight,
@@ -8,7 +17,8 @@ import {
   MessageCircle,
   Volume2,
   VolumeX,
-  Download
+  Download,
+  GripHorizontal
 } from 'lucide-react'
 import { getMergedTags } from '@/lib/utils'
 
@@ -21,11 +31,51 @@ interface MediaViewerProps {
   onOpenChange: (open: boolean) => void
   allPosts?: DbPost[]
   onSelectPost?: (post: DbPost) => void
-  /** 传入后作者名可点击，用于跳转查看该作者的全部作品 */
-  onAuthorClick?: (secUid: string) => void
+  /** 传入后作者名可点击，用于查看该作者的全部作品 */
+  onAuthorClick?: (post: DbPost) => void
 }
 
 const IMAGE_AUTO_INTERVAL = 3000
+/** 相关推荐展示条数 */
+const RECOMMEND_COUNT = 4
+
+/** 右栏固定 400 宽，其余归视频区；改总宽就等于改视频区宽度 */
+const VIEWER_SIDE_WIDTH = 400
+const SIZE_STORAGE_KEY = 'media_viewer_size'
+const DEFAULT_VIEWER_SIZE = { width: 780, height: 520 }
+const MIN_VIEWER_SIZE = { width: 660, height: 400 }
+const VIEWER_MARGIN = 40
+/** 滚轮切作品：累计 deltaY 过阈值才切一次，切完冷却一段时间吸收同一次手势的惯性 */
+const WHEEL_SWITCH_THRESHOLD = 80
+const WHEEL_SWITCH_COOLDOWN = 500
+
+/** 夹到 [最小值, 窗口留边] 之间；只拉高不会让画面变大，加宽才会 */
+function clampViewerSize(size: { width: number; height: number }): {
+  width: number
+  height: number
+} {
+  const maxWidth = Math.max(MIN_VIEWER_SIZE.width, window.innerWidth - VIEWER_MARGIN)
+  const maxHeight = Math.max(MIN_VIEWER_SIZE.height, window.innerHeight - VIEWER_MARGIN)
+  return {
+    width: Math.min(Math.max(size.width, MIN_VIEWER_SIZE.width), maxWidth),
+    height: Math.min(Math.max(size.height, MIN_VIEWER_SIZE.height), maxHeight)
+  }
+}
+
+function loadViewerSize(): { width: number; height: number } {
+  try {
+    const raw = localStorage.getItem(SIZE_STORAGE_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw) as { width?: unknown; height?: unknown }
+      if (typeof parsed.width === 'number' && typeof parsed.height === 'number') {
+        return clampViewerSize({ width: parsed.width, height: parsed.height })
+      }
+    }
+  } catch {
+    // 读取失败按默认
+  }
+  return clampViewerSize(DEFAULT_VIEWER_SIZE)
+}
 
 export function MediaViewer({
   post,
@@ -41,16 +91,31 @@ export function MediaViewer({
   const [isMuted, setIsMuted] = useState(false)
   const [recommendCovers, setRecommendCovers] = useState<Map<number, string>>(new Map())
   const [manualOverride, setManualOverride] = useState(false)
+  // 按作品 id 记录展开状态，切换作品时自动收起
+  const [expandedPostId, setExpandedPostId] = useState<number | null>(null)
+  const [descOverflowing, setDescOverflowing] = useState(false)
+  const descRef = useRef<HTMLHeadingElement | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const autoTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   // 快速切换作品时，旧请求可能晚于新请求返回，用序号丢弃过期结果
   const mediaRequestSeq = useRef(0)
+  const [viewerSize, setViewerSize] = useState(loadViewerSize)
+  const viewerSizeRef = useRef(viewerSize)
+  const resizeStartRef = useRef<{
+    x: number
+    y: number
+    width: number
+    height: number
+  } | null>(null)
+  const wheelAccumRef = useRef(0)
+  const wheelLockUntilRef = useRef(0)
 
   useEffect(() => {
     if (open && post) {
       loadMedia()
       setManualOverride(false)
       setCurrentIndex(0)
+      setExpandedPostId(null)
     } else {
       setMedia(null)
       setCurrentIndex(0)
@@ -88,10 +153,10 @@ export function MediaViewer({
           const tags = getMergedTags(p)
           return tags.some((t) => currentTags.includes(t))
         })
-        .slice(0, 2)
+        .slice(0, RECOMMEND_COUNT - 1)
 
       for (const p of sameTagOtherAuthor) {
-        if (result.length < 3 && !usedIds.has(p.id)) {
+        if (result.length < RECOMMEND_COUNT && !usedIds.has(p.id)) {
           result.push(p)
           usedIds.add(p.id)
         }
@@ -100,24 +165,31 @@ export function MediaViewer({
 
     // 第二优先：同作者的其他视频（最多1个）
     const sameAuthor = candidates.find((p) => p.sec_uid === currentSecUid && !usedIds.has(p.id))
-    if (sameAuthor && result.length < 3) {
+    if (sameAuthor && result.length < RECOMMEND_COUNT) {
       result.push(sameAuthor)
       usedIds.add(sameAuthor.id)
     }
 
-    // 第三优先：随机补充其他作者的视频
+    // 第三优先：随机补充其他作者的视频。池子得先洗一遍，否则是照着列表排序取头几条，
+    // 每次都是同一批（filter 返回新数组，就地洗不影响 candidates）
     const otherAuthors = candidates.filter((p) => p.sec_uid !== currentSecUid && !usedIds.has(p.id))
+    for (let i = otherAuthors.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      const tmp = otherAuthors[i]
+      otherAuthors[i] = otherAuthors[j]
+      otherAuthors[j] = tmp
+    }
     for (const p of otherAuthors) {
-      if (result.length >= 3) break
+      if (result.length >= RECOMMEND_COUNT) break
       result.push(p)
       usedIds.add(p.id)
     }
 
     // 如果还不够，补充同作者的
-    if (result.length < 3) {
+    if (result.length < RECOMMEND_COUNT) {
       const remaining = candidates.filter((p) => !usedIds.has(p.id))
       for (const p of remaining) {
-        if (result.length >= 3) break
+        if (result.length >= RECOMMEND_COUNT) break
         result.push(p)
       }
     }
@@ -207,7 +279,7 @@ export function MediaViewer({
   }
 
   /**
-   * Esc 关闭，←/→ 翻图集。
+   * Esc 关闭，←/→ 翻图集，↑/↓ 切作品（与滚轮同方向）。
    * 原先挂在弹层 div 的 React onKeyDown 上，但那个 div 从没获得过焦点，
    * 这段一直没生效过，故改为 window 监听。
    * 视频作品不在这里处理 ←/→ —— 那是播放器的快进快退。
@@ -221,6 +293,15 @@ export function MediaViewer({
         onOpenChange(false)
         return
       }
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        if (!onSelectPost || allPosts.length === 0) return
+        e.preventDefault()
+        const dir = e.key === 'ArrowDown' ? 1 : -1
+        const idx = allPosts.findIndex((p) => p.id === post?.id)
+        const next = idx >= 0 ? allPosts[idx + dir] : undefined
+        if (next) onSelectPost(next)
+        return
+      }
       if (!isImages || !hasMultipleImages) return
       if (e.key === 'ArrowLeft') {
         e.preventDefault()
@@ -232,7 +313,48 @@ export function MediaViewer({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [open, isImages, hasMultipleImages, handlePrev, handleNext, onOpenChange])
+  }, [
+    open,
+    isImages,
+    hasMultipleImages,
+    handlePrev,
+    handleNext,
+    onOpenChange,
+    onSelectPost,
+    allPosts,
+    post?.id
+  ])
+
+  /**
+   * 滚轮切换作品：下滚下一条、上滚上一条，到头即停。
+   * 用原生 window 监听而不是 onWheel —— React 的 wheel 监听是 passive 的，
+   * preventDefault 拦不住，滚轮会穿透去滚背后的列表。capture 是为了不被播放器内部的
+   * 事件处理拦住。
+   */
+  useEffect(() => {
+    if (!open) {
+      wheelAccumRef.current = 0
+      return
+    }
+    if (!onSelectPost || allPosts.length === 0) return
+    const onWheel = (e: WheelEvent): void => {
+      // 相关推荐列表自己可滚动，滚它时不切作品
+      if ((e.target as HTMLElement | null)?.closest('[data-scroll-panel]')) return
+      e.preventDefault()
+      const now = performance.now()
+      if (now < wheelLockUntilRef.current) return
+      wheelAccumRef.current += e.deltaY
+      if (Math.abs(wheelAccumRef.current) < WHEEL_SWITCH_THRESHOLD) return
+      const dir = wheelAccumRef.current > 0 ? 1 : -1
+      wheelAccumRef.current = 0
+      wheelLockUntilRef.current = now + WHEEL_SWITCH_COOLDOWN
+      const idx = allPosts.findIndex((p) => p.id === post?.id)
+      const next = idx >= 0 ? allPosts[idx + dir] : undefined
+      if (next) onSelectPost(next)
+    }
+    window.addEventListener('wheel', onWheel, { passive: false, capture: true })
+    return () => window.removeEventListener('wheel', onWheel, { capture: true })
+  }, [open, post?.id, allPosts, onSelectPost])
 
   const handleDownload = async () => {
     if (!post) return
@@ -249,8 +371,62 @@ export function MediaViewer({
     }
   }
 
+  const handleResizeStart = (e: React.PointerEvent): void => {
+    e.preventDefault()
+    e.stopPropagation()
+    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+    resizeStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      width: viewerSize.width,
+      height: viewerSize.height
+    }
+    // 拖拽中禁用文字选择，免得选中标题/正文
+    document.body.style.userSelect = 'none'
+  }
+
+  const handleResizeMove = (e: React.PointerEvent): void => {
+    const start = resizeStartRef.current
+    if (!start) return
+    const next = clampViewerSize({
+      width: start.width + (e.clientX - start.x),
+      height: start.height + (e.clientY - start.y)
+    })
+    viewerSizeRef.current = next
+    setViewerSize(next)
+  }
+
+  const handleResizeEnd = (e: React.PointerEvent): void => {
+    if (!resizeStartRef.current) return
+    resizeStartRef.current = null
+    document.body.style.userSelect = ''
+    try {
+      ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
+    } catch {
+      // 指针已释放
+    }
+    try {
+      localStorage.setItem(SIZE_STORAGE_KEY, JSON.stringify(viewerSizeRef.current))
+    } catch {
+      // 写入失败忽略
+    }
+  }
+
   // 解析标签（合并 AI + 手动）
   const tags = post ? getMergedTags(post) : []
+
+  const descExpanded = post?.id != null && expandedPostId === post.id
+
+  // 只在收起时测量；被 line-clamp 截断时 scrollHeight 仍是全文高度
+  useLayoutEffect(() => {
+    if (descExpanded) return
+    const el = descRef.current
+    if (!el) {
+      setDescOverflowing(false)
+      return
+    }
+    setDescOverflowing(el.scrollHeight > el.clientHeight + 1)
+  }, [post?.id, descExpanded])
 
   if (!open) return null
 
@@ -260,12 +436,15 @@ export function MediaViewer({
       onClick={() => onOpenChange(false)}
     >
       <div
-        className="flex bg-white rounded-2xl overflow-hidden shadow-xl border border-[#E5E5E7]"
-        style={{ width: 780, height: 520 }}
+        className="relative flex bg-white rounded-2xl overflow-hidden shadow-xl border border-[#E5E5E7]"
+        style={{ width: viewerSize.width, height: viewerSize.height }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* 左侧 - 视频/图片区域 */}
-        <div className="relative bg-black flex items-center justify-center" style={{ width: 380 }}>
+        <div
+          className="relative bg-black flex items-center justify-center"
+          style={{ width: viewerSize.width - VIEWER_SIDE_WIDTH }}
+        >
           {loading ? (
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white" />
           ) : media ? (
@@ -360,9 +539,27 @@ export function MediaViewer({
         <div className="flex flex-col" style={{ width: 400, padding: 20 }}>
           {/* 标题行 */}
           <div className="flex items-start justify-between gap-3">
-            <h3 className="text-base font-medium text-[#1D1D1F] leading-tight line-clamp-2 flex-1">
-              {post?.desc || post?.caption || '无标题'}
-            </h3>
+            <div className="flex-1 min-w-0">
+              <h3
+                ref={descRef}
+                className={`text-base font-medium text-[#1D1D1F] leading-tight ${
+                  descExpanded
+                    ? 'max-h-[min(30vh,220px)] overflow-y-auto overscroll-contain pr-1'
+                    : 'line-clamp-2'
+                }`}
+                data-scroll-panel={descExpanded ? 'true' : undefined}
+              >
+                {post?.desc || post?.caption || '无标题'}
+              </h3>
+              {descOverflowing && (
+                <button
+                  onClick={() => setExpandedPostId(descExpanded ? null : (post?.id ?? null))}
+                  className="mt-1 text-xs text-[#0A84FF] hover:underline"
+                >
+                  {descExpanded ? '收起' : '展开'}
+                </button>
+              )}
+            </div>
             <button
               onClick={() => onOpenChange(false)}
               className="w-7 h-7 rounded-full bg-[#F2F2F4] hover:bg-[#E5E5E7] flex items-center justify-center flex-shrink-0 transition-colors"
@@ -396,7 +593,7 @@ export function MediaViewer({
               <div>
                 {onAuthorClick && post ? (
                   <button
-                    onClick={() => onAuthorClick(post.sec_uid)}
+                    onClick={() => onAuthorClick(post)}
                     title={`查看 @${post.nickname} 的全部作品`}
                     className="text-sm font-medium text-[#1D1D1F] hover:text-[#0A84FF] hover:underline transition-colors"
                   >
@@ -432,8 +629,11 @@ export function MediaViewer({
             打开文件夹
           </button>
 
-          {/* 相关推荐 */}
-          <div className="mt-4 flex-1 overflow-hidden">
+          {/* 相关推荐：条数按 RECOMMEND_COUNT，窗口太矮时内部滚动 */}
+          <div
+            className="mt-4 flex-1 min-h-0 overflow-y-auto overscroll-contain"
+            data-scroll-panel
+          >
             <h4 className="text-sm font-medium text-[#1D1D1F] mb-3">相关推荐</h4>
             <div className="space-y-2.5">
               {recommendations.length > 0 ? (
@@ -469,6 +669,18 @@ export function MediaViewer({
               )}
             </div>
           </div>
+        </div>
+
+        {/* 右下角拖拽把手：同时改宽度（= 视频区宽度）与高度 */}
+        <div
+          onPointerDown={handleResizeStart}
+          onPointerMove={handleResizeMove}
+          onPointerUp={handleResizeEnd}
+          onPointerCancel={handleResizeEnd}
+          className="absolute right-0 bottom-0 z-10 flex h-4 w-4 cursor-nwse-resize items-center justify-center text-[#A1A1A6] hover:text-[#6E6E73] touch-none"
+          title="拖动调整大小"
+        >
+          <GripHorizontal className="h-4 w-4" />
         </div>
       </div>
     </div>

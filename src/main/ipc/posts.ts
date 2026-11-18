@@ -8,6 +8,7 @@ import {
   getAllTags,
   deletePost,
   getPostById,
+  getPostByAwemeId,
   getPostsByUserId,
   fixAllPostTitles,
   deletePostsByUserId,
@@ -17,13 +18,22 @@ import {
   getPostsByUserIdAll,
   deletePostByAwemeId,
   setManualContentLevel,
+  setMusicIgnored,
+  type DbPost,
   type PostFilters,
   type PostSortConfig
 } from '../database'
-import { findCoverFile, findMediaFiles, getDownloadPath } from '../services/media'
+import {
+  AUDIO_FILE_PATTERN,
+  findCoverFile,
+  findMediaFiles,
+  getDownloadPath,
+  resolvePostFolder
+} from '../services/media'
 import { isLocalAwemeId } from '../../shared/local-post'
 import { assertFolderName, assertSecUid } from '../utils/path-segment'
 import { checkPostFileIntegrity, cleanupFailedDownload } from '../services/download/validator'
+import { fillPostMusic } from '../services/download/music-fill'
 
 // 文件页挂载时会对每个用户遍历全部作品目录做 stat（几万作品 = 十几万次 stat）；
 // 短时间内反复进出文件页直接复用上次结果，删除作品时按作者失效
@@ -143,6 +153,11 @@ export function registerPostIpc(): void {
     setManualContentLevel(postId, level)
   })
 
+  ipcMain.handle('post:setMusicIgnored', (_event, postId: number, ignored: boolean) => {
+    if (!getPostById(postId)) throw new Error('作品记录不存在')
+    setMusicIgnored(postId, ignored)
+  })
+
   ipcMain.handle('files:deletePost', async (_event, postId: number) => {
     const post = getPostById(postId)
     if (!post) return false
@@ -200,6 +215,38 @@ export function registerPostIpc(): void {
       }
     }
     return results
+  })
+
+  // 图集缺音乐扫描：只看文件夹还在（文件夹都没了属于损坏文件）但没有音频文件的作品。
+  // 只做本地判断，不联网；结果交给文件页以卡片形式展示，方便右键打开文件夹手动补音乐。
+  ipcMain.handle('post:scanMissingMusic', async () => {
+    const results: DbPost[] = []
+    for (const user of getAllUsers()) {
+      for (const post of getPostsByUserIdAll(user.id)) {
+        if (post.aweme_type !== 68) continue
+        const folderPath = resolvePostFolder(post.sec_uid, post.folder_name)
+        if (!folderPath) continue
+        let files: string[]
+        try {
+          files = readdirSync(folderPath)
+        } catch {
+          continue
+        }
+        if (!files.some((f) => AUDIO_FILE_PATTERN.test(f))) results.push(post)
+      }
+    }
+    results.sort((a, b) => (b.downloaded_at || 0) - (a.downloaded_at || 0))
+    return results
+  })
+
+  // 按 aweme_id 从抖音补下原声到现有文件夹（缺音乐图集专用）
+  ipcMain.handle('post:fillMusic', async (_event, awemeId: string) => {
+    if (isLocalAwemeId(awemeId)) {
+      return { status: 'failed', error: '本地导入的作品没有抖音来源' }
+    }
+    const post = getPostByAwemeId(awemeId)
+    if (!post) return { status: 'failed', error: '作品记录不存在' }
+    return fillPostMusic(post)
   })
 
   ipcMain.handle('post:redownload', async (_event, awemeId: string) => {

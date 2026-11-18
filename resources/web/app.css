@@ -680,13 +680,35 @@ input { border: none; outline: none; background: none; }
   pointer-events: none;
 }
 
+/* 文案后面的暗色衬底：只在展开长文时淡入，平时不挡画面 */
+.story-copy::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: -18px -18px -14px -14px;
+  border-radius: 18px;
+  background: linear-gradient(
+    to top,
+    rgba(0, 0, 0, 0.68),
+    rgba(0, 0, 0, 0.45) 72%,
+    rgba(0, 0, 0, 0.12)
+  );
+  opacity: 0;
+  transition: opacity 160ms ease;
+  pointer-events: none;
+}
+
+.story[data-desc-expanded='1'] .story-copy::before {
+  opacity: 1;
+}
+
 .story-copy > * { pointer-events: auto; }
 
 .story-author {
   font-size: 16px;
   font-weight: 700;
   letter-spacing: -0.01em;
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55), 0 0 12px rgba(0, 0, 0, 0.35);
 }
 
 .story-title {
@@ -694,11 +716,48 @@ input { border: none; outline: none; background: none; }
   font-size: 14px;
   line-height: 1.5;
   color: rgba(255, 255, 255, 0.92);
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55), 0 0 12px rgba(0, 0, 0, 0.35);
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/* 展开后限高并在文案内滚动，避免长文顶到播放器上沿 */
+.story-title.is-expanded {
+  display: block;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-line-clamp: unset;
+  max-height: 46vh;
+  max-height: 46dvh;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
+}
+
+/* 只有文案溢出三行时脚本才把它显示出来 */
+.story-expand {
+  display: block;
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.78);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+}
+
+.story-expand:hover {
+  color: #fff;
+}
+
+.story-expand[hidden] {
+  display: none;
 }
 
 .story-tags {
@@ -762,6 +821,92 @@ input { border: none; outline: none; background: none; }
 .rail-button.is-active:hover {
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
 }
+
+.rail-button-speed { font-weight: 700; }
+
+.rail-speed-label {
+  font-size: 13px;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
+.speed-panel {
+  position: absolute;
+  z-index: 20;
+  right: 72px;
+  bottom: calc(24px + var(--safe-bottom));
+  width: min(262px, calc(100vw - 104px));
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(18, 16, 28, 0.86);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.55);
+  color: #fff;
+}
+
+.speed-panel[hidden] { display: none; }
+
+.speed-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.68);
+}
+
+.speed-panel-head b {
+  font-size: 15px;
+  color: #fff;
+}
+
+.speed-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 12px;
+}
+
+.speed-chip {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-surface);
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.speed-chip:hover { background: var(--glass-surface-hi); }
+
+.speed-chip.is-active {
+  color: #1a1330;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border-color: transparent;
+}
+
+.speed-slider {
+  width: 100%;
+  margin: 0 0 12px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.speed-reset {
+  width: 100%;
+  height: 32px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-surface);
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.speed-reset:hover { background: var(--glass-surface-hi); }
 
 .story-gallery-nav {
   position: absolute;
@@ -893,6 +1038,7 @@ input { border: none; outline: none; background: none; }
     inset: auto 96px calc(36px + var(--safe-bottom)) 36px;
   }
   .story-rail { right: 24px; bottom: calc(36px + var(--safe-bottom)); }
+  .speed-panel { right: 84px; bottom: calc(40px + var(--safe-bottom)); }
 }
 
 @media (min-width: 1280px) {

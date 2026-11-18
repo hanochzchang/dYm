@@ -1,4 +1,5 @@
 import { getDatabase } from './connection'
+import { VISIBLE_SEC_UIDS, VISIBLE_USERS, visibleSecUidGate } from './visibility'
 
 // ========== Dashboard Stats ==========
 
@@ -11,14 +12,16 @@ export interface DashboardOverview {
 
 export function getDashboardOverview(): DashboardOverview {
   const database = getDatabase()
-  const userRow = database.prepare('SELECT COUNT(*) as cnt FROM users').get() as { cnt: number }
+  const userRow = database
+    .prepare(`SELECT COUNT(*) as cnt FROM users WHERE ${VISIBLE_USERS}`)
+    .get() as { cnt: number }
   const postRow = database
     .prepare(
       `SELECT
         COUNT(*) as total,
         COALESCE(SUM(CASE WHEN analyzed_at IS NOT NULL THEN 1 ELSE 0 END), 0) as analyzed,
         COALESCE(SUM(CASE WHEN downloaded_at >= strftime('%s','now','start of day') THEN 1 ELSE 0 END), 0) as today
-      FROM posts`
+      FROM posts WHERE ${visibleSecUidGate()}`
     )
     .get() as { total: number; analyzed: number; today: number }
   return {
@@ -41,12 +44,15 @@ export function getDownloadTrend(days = 30): TrendPoint[] {
       `SELECT date(downloaded_at, 'unixepoch', 'localtime') as date, COUNT(*) as count
        FROM posts
        WHERE downloaded_at >= strftime('%s','now','-' || ? || ' days')
+         AND ${visibleSecUidGate()}
        GROUP BY date ORDER BY date`
     )
     .all(days) as TrendPoint[]
 }
 
 export interface UserDistItem {
+  // 供仪表盘点柱跳转到该作者的作品（/tags?user=…）
+  sec_uid: string
   nickname: string
   count: number
 }
@@ -55,7 +61,8 @@ export function getUserVideoDistribution(limit = 10): UserDistItem[] {
   const database = getDatabase()
   return database
     .prepare(
-      `SELECT nickname, COUNT(*) as count FROM posts
+      `SELECT sec_uid, nickname, COUNT(*) as count FROM posts
+       WHERE ${visibleSecUidGate()}
        GROUP BY sec_uid ORDER BY count DESC LIMIT ?`
     )
     .all(limit) as UserDistItem[]
@@ -73,6 +80,8 @@ export function getTopTags(limit = 20): TagStatItem[] {
     .prepare(
       `SELECT t.name AS tag, COUNT(DISTINCT pt.post_id) AS count
        FROM post_tags pt JOIN tags t ON t.id = pt.tag_id
+       JOIN posts p ON p.id = pt.post_id
+       WHERE p.sec_uid IN ${VISIBLE_SEC_UIDS}
        GROUP BY t.id
        ORDER BY count DESC
        LIMIT ?`
@@ -92,6 +101,7 @@ export function getContentLevelDistribution(): LevelDistItem[] {
       // 生效等级：手动分压过 AI 分。手动分允许在未分析时就给，故不再要求 analyzed_at
       `SELECT COALESCE(manual_content_level, analysis_content_level) as level, COUNT(*) as count
        FROM posts WHERE COALESCE(manual_content_level, analysis_content_level) IS NOT NULL
+         AND ${visibleSecUidGate()}
        GROUP BY level ORDER BY level`
     )
     .all() as LevelDistItem[]

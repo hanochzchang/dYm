@@ -33,6 +33,8 @@ interface NewJobDialogProps {
 const ALL = '__all__'
 const DEFAULT_PROVIDER = '__default__'
 
+type JobMode = 'analyze' | 'transcribe'
+
 export function NewJobDialog({
   open,
   onOpenChange,
@@ -43,9 +45,11 @@ export function NewJobDialog({
 }: NewJobDialogProps): React.JSX.Element {
   const [userStats, setUserStats] = useState<UserAnalysisStats[]>([])
   const [totals, setTotals] = useState<TotalAnalysisStats | null>(null)
+  const [mode, setMode] = useState<JobMode>('analyze')
   const [secUid, setSecUid] = useState(ALL)
   const [search, setSearch] = useState('')
   const [onlyUnanalyzed, setOnlyUnanalyzed] = useState(true)
+  const [onlyUntranscribed, setOnlyUntranscribed] = useState(true)
   const [providerId, setProviderId] = useState(DEFAULT_PROVIDER)
   const [asrProviderId, setAsrProviderId] = useState(DEFAULT_PROVIDER)
   const [transcribeEnabled, setTranscribeEnabled] = useState<boolean | null>(null)
@@ -54,9 +58,11 @@ export function NewJobDialog({
 
   useEffect(() => {
     if (!open) return
+    setMode('analyze')
     setSecUid(ALL)
     setSearch('')
     setOnlyUnanalyzed(true)
+    setOnlyUntranscribed(true)
     setProviderId(DEFAULT_PROVIDER)
     setAsrProviderId(DEFAULT_PROVIDER)
     setPriority(false)
@@ -79,13 +85,17 @@ export function NewJobDialog({
     return [...list].sort((a, b) => b.unanalyzed - a.unanalyzed)
   }, [userStats, search])
 
+  const isTranscribe = mode === 'transcribe'
+
   const selectedUser = userStats.find((u) => u.sec_uid === secUid)
   const estimate = (() => {
     if (secUid === ALL) {
       if (!totals) return null
+      if (isTranscribe) return onlyUntranscribed ? totals.untranscribed : totals.total
       return onlyUnanalyzed ? totals.unanalyzed : totals.total
     }
     if (!selectedUser) return null
+    if (isTranscribe) return onlyUntranscribed ? selectedUser.untranscribed : selectedUser.total
     return onlyUnanalyzed ? selectedUser.unanalyzed : selectedUser.total
   })()
 
@@ -93,16 +103,22 @@ export function NewJobDialog({
   const defaultAsr = asrProviders.find((p) => p.isDefault) ?? asrProviders[0]
 
   const handleCreate = async (): Promise<void> => {
-    if (!providers.length) {
+    if (isTranscribe) {
+      if (!asrProviders.length) {
+        toast.error('还没有配置语音转写服务，请先在「语音转写服务」里添加')
+        return
+      }
+    } else if (!providers.length) {
       onNeedProvider()
       return
     }
     setCreating(true)
     try {
       const job = await window.api.analysis.createJob({
-        kind: 'analyze',
+        kind: isTranscribe ? 'transcribe' : 'analyze',
         secUid: secUid === ALL ? undefined : secUid,
-        onlyUnanalyzed,
+        onlyUnanalyzed: isTranscribe ? undefined : onlyUnanalyzed,
+        onlyUntranscribed: isTranscribe ? onlyUntranscribed : undefined,
         providerId: providerId === DEFAULT_PROVIDER ? undefined : providerId,
         asrProviderId: asrProviderId === DEFAULT_PROVIDER ? undefined : asrProviderId,
         priority
@@ -121,13 +137,37 @@ export function NewJobDialog({
     <Dialog open={open} onOpenChange={(o) => !creating && onOpenChange(o)}>
       <DialogContent className="max-w-xl">
         <DialogHeader>
-          <DialogTitle>新建分析作业</DialogTitle>
+          <DialogTitle>{isTranscribe ? '新建转写作业' : '新建分析作业'}</DialogTitle>
           <DialogDescription>
-            作业会进入队列按顺序执行，可随时暂停或取消；关闭窗口不影响后台运行
+            {isTranscribe
+              ? '只调用语音转写服务生成口播文稿，不抽帧、不调用 AI；结果可被之后的分析复用'
+              : '作业会进入队列按顺序执行，可随时暂停或取消；关闭窗口不影响后台运行'}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-1 rounded-lg bg-[#F5F5F7] p-1">
+            {(
+              [
+                { value: 'analyze', label: 'AI 分析' },
+                { value: 'transcribe', label: '只转写' }
+              ] as const
+            ).map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                onClick={() => setMode(item.value)}
+                className={`h-8 rounded-md text-sm transition-colors ${
+                  mode === item.value
+                    ? 'bg-white shadow-sm text-[#1D1D1F] font-medium'
+                    : 'text-[#6E6E73] hover:text-[#1D1D1F]'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-[#6E6E73]">范围</label>
             <div className="rounded-lg border border-[#E5E5E7] overflow-hidden">
@@ -148,20 +188,33 @@ export function NewJobDialog({
                     active={secUid === ALL}
                     onClick={() => setSecUid(ALL)}
                     label="全部用户"
-                    meta={totals ? `${totals.analyzed}/${totals.total}` : ''}
-                    pending={totals?.unanalyzed ?? 0}
+                    meta={
+                      totals
+                        ? isTranscribe
+                          ? `${totals.total - totals.untranscribed}/${totals.total}`
+                          : `${totals.analyzed}/${totals.total}`
+                        : ''
+                    }
+                    pending={
+                      (isTranscribe ? totals?.untranscribed : totals?.unanalyzed) ?? 0
+                    }
                   />
                 )}
-                {filteredUsers.map((u) => (
-                  <ScopeRow
-                    key={u.sec_uid}
-                    active={secUid === u.sec_uid}
-                    onClick={() => setSecUid(u.sec_uid)}
-                    label={u.nickname}
-                    meta={`${u.analyzed}/${u.total}`}
-                    pending={u.unanalyzed}
-                  />
-                ))}
+                {filteredUsers.map((u) => {
+                  const pending = isTranscribe ? u.untranscribed : u.unanalyzed
+                  return (
+                    <ScopeRow
+                      key={u.sec_uid}
+                      active={secUid === u.sec_uid}
+                      onClick={() => setSecUid(u.sec_uid)}
+                      label={u.nickname}
+                      meta={
+                        isTranscribe ? `${u.total - u.untranscribed}/${u.total}` : `${u.analyzed}/${u.total}`
+                      }
+                      pending={pending}
+                    />
+                  )
+                })}
                 {search && filteredUsers.length === 0 && (
                   <div className="px-3 py-4 text-sm text-[#A1A1A6] text-center">未找到匹配用户</div>
                 )}
@@ -171,52 +224,68 @@ export function NewJobDialog({
 
           <div className="flex items-center justify-between gap-3 rounded-lg border border-[#E5E5E7] px-3 py-2.5">
             <div>
-              <p className="text-sm text-[#1D1D1F]">仅分析未分析过的作品</p>
+              <p className="text-sm text-[#1D1D1F]">
+                {isTranscribe ? '仅转写还没有文稿的作品' : '仅分析未分析过的作品'}
+              </p>
               <p className="text-[11px] text-[#A1A1A6] mt-0.5">
-                关闭后会重新分析范围内全部作品，AI 标签将被覆盖（手动标签保留）
+                {isTranscribe
+                  ? '关闭后会重新转写范围内全部作品，已有文稿会被覆盖'
+                  : '关闭后会重新分析范围内全部作品，AI 标签将被覆盖（手动标签保留）'}
               </p>
             </div>
-            <Switch checked={onlyUnanalyzed} onCheckedChange={setOnlyUnanalyzed} />
+            <Switch
+              checked={isTranscribe ? onlyUntranscribed : onlyUnanalyzed}
+              onCheckedChange={isTranscribe ? setOnlyUntranscribed : setOnlyUnanalyzed}
+            />
           </div>
 
-          <div className="grid grid-cols-[1fr_auto] gap-3 items-end">
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-[#6E6E73]">提供方</label>
-              {providers.length ? (
-                <Select value={providerId} onValueChange={setProviderId}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={DEFAULT_PROVIDER}>
-                      默认{defaultProvider ? `（${defaultProvider.name}）` : ''}
-                    </SelectItem>
-                    {providers.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.name} · {p.model}
+          {!isTranscribe && (
+            <div className="grid grid-cols-[1fr_auto] gap-3 items-end">
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-[#6E6E73]">提供方</label>
+                {providers.length ? (
+                  <Select value={providerId} onValueChange={setProviderId}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={DEFAULT_PROVIDER}>
+                        默认{defaultProvider ? `（${defaultProvider.name}）` : ''}
                       </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <button
-                  type="button"
-                  onClick={onNeedProvider}
-                  className="w-full h-9 px-3 rounded-md border border-dashed border-[#F59E0B] text-sm text-[#B45309] bg-[#FFFBEB] text-left"
-                >
-                  尚未配置 AI 提供方，点击前往配置
-                </button>
-              )}
+                      {providers.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>
+                          {p.name} · {p.model}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={onNeedProvider}
+                    className="w-full h-9 px-3 rounded-md border border-dashed border-[#F59E0B] text-sm text-[#B45309] bg-[#FFFBEB] text-left"
+                  >
+                    尚未配置 AI 提供方，点击前往配置
+                  </button>
+                )}
+              </div>
+              <label className="flex items-center gap-2 h-9 text-sm text-[#1D1D1F] select-none">
+                <Switch checked={priority} onCheckedChange={setPriority} />
+                插队优先
+              </label>
             </div>
-            <label className="flex items-center gap-2 h-9 text-sm text-[#1D1D1F] select-none">
+          )}
+
+          {isTranscribe && (
+            <label className="flex items-center gap-2 text-sm text-[#1D1D1F] select-none">
               <Switch checked={priority} onCheckedChange={setPriority} />
               插队优先
             </label>
-          </div>
+          )}
 
-          {transcribeEnabled && (
+          {(transcribeEnabled || isTranscribe) && (
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-[#6E6E73]">语音转写</label>
+              <label className="text-xs font-medium text-[#6E6E73]">语音转写服务</label>
               {asrProviders.length ? (
                 <Select value={asrProviderId} onValueChange={setAsrProviderId}>
                   <SelectTrigger>
@@ -237,9 +306,15 @@ export function NewJobDialog({
                 <Link
                   to={analysisPath('asr')}
                   onClick={() => onOpenChange(false)}
-                  className="block w-full h-9 px-3 leading-9 rounded-md border border-dashed border-[#D1D1D6] text-sm text-[#6E6E73] bg-[#FAFAFA] hover:border-[#0A84FF] hover:text-[#0A84FF] transition-colors"
+                  className={`block w-full h-9 px-3 leading-9 rounded-md border border-dashed text-sm text-left transition-colors ${
+                    isTranscribe
+                      ? 'border-[#F59E0B] text-[#B45309] bg-[#FFFBEB] hover:border-[#D97706]'
+                      : 'border-[#D1D1D6] text-[#6E6E73] bg-[#FAFAFA] hover:border-[#0A84FF] hover:text-[#0A84FF]'
+                  }`}
                 >
-                  未配置转写服务，本次只看画面和文案；点击前往配置
+                  {isTranscribe
+                    ? '只转写需要转写服务，尚未配置；点击前往配置'
+                    : '未配置转写服务，本次只看画面和文案；点击前往配置'}
                 </Link>
               )}
             </div>

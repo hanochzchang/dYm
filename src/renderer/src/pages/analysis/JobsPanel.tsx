@@ -145,7 +145,7 @@ export function JobsPanel({ jobs, totals, onCreate }: JobsPanelProps): React.JSX
                   <div className="flex-1 min-w-0">
                     <p className="text-sm text-[#1D1D1F] truncate">{job.name}</p>
                     <p className="text-[11px] text-[#A1A1A6] mt-0.5">
-                      {job.providerName ?? '默认提供方'} · {formatUnixTime(job.createdAt)}
+                      {job.kind === 'transcribe' ? '只转写' : (job.providerName ?? '默认提供方')} · {formatUnixTime(job.createdAt)}
                       {job.startedAt && job.finishedAt
                         ? ` · 用时 ${formatDuration(job.startedAt, job.finishedAt)}`
                         : ''}
@@ -264,7 +264,7 @@ function JobCard({
             <p className="text-sm font-semibold text-[#1D1D1F] truncate">{job.name}</p>
           </div>
           <p className="text-[11px] text-[#A1A1A6] mt-1">
-            {job.providerName ?? '默认提供方'} · 创建于 {formatUnixTime(job.createdAt)}
+            {job.kind === 'transcribe' ? '只转写' : (job.providerName ?? '默认提供方')} · 创建于 {formatUnixTime(job.createdAt)}
             {job.startedAt ? ` · 已运行 ${formatDuration(job.startedAt, job.finishedAt)}` : ''}
           </p>
         </div>

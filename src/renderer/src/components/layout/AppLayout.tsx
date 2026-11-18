@@ -10,7 +10,11 @@ import {
   devNavItems,
   HIDDEN_NAV_KEY,
   NAV_VISIBILITY_EVENT,
-  parseHiddenNavItems
+  NAV_ORDER_KEY,
+  NAV_ORDER_EVENT,
+  parseHiddenNavItems,
+  parseNavOrder,
+  sortNavItems
 } from '@/lib/sidebar-nav'
 
 const COLLAPSE_KEY = 'sidebar_collapsed'
@@ -23,6 +27,7 @@ export function AppLayout(): React.JSX.Element {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSE_KEY) === '1')
   const [developerMode, setDeveloperMode] = useState(false)
   const [hiddenNav, setHiddenNav] = useState<string[]>([])
+  const [navOrder, setNavOrder] = useState<string[]>([])
 
   const toggleCollapsed = (): void => {
     setCollapsed((prev) => {
@@ -45,18 +50,33 @@ export function AppLayout(): React.JSX.Element {
     return () => window.removeEventListener(DEVELOPER_MODE_EVENT, handler)
   }, [])
 
-  // 侧边栏菜单可见性：初始读取 + 监听设置页的实时切换
+  // 侧边栏菜单可见性与顺序：初始读取 + 监听设置页的实时切换
   useEffect(() => {
-    window.api.settings
-      .get(HIDDEN_NAV_KEY)
-      .then((value) => setHiddenNav(parseHiddenNavItems(value)))
-      .catch(() => setHiddenNav([]))
+    Promise.all([
+      window.api.settings.get(HIDDEN_NAV_KEY).then(parseHiddenNavItems),
+      window.api.settings.get(NAV_ORDER_KEY).then(parseNavOrder)
+    ])
+      .then(([hidden, order]) => {
+        setHiddenNav(hidden)
+        setNavOrder(order)
+      })
+      .catch(() => {
+        setHiddenNav([])
+        setNavOrder([])
+      })
 
-    const handler = (event: Event): void => {
+    const onHidden = (event: Event): void => {
       setHiddenNav((event as CustomEvent<string[]>).detail)
     }
-    window.addEventListener(NAV_VISIBILITY_EVENT, handler)
-    return () => window.removeEventListener(NAV_VISIBILITY_EVENT, handler)
+    const onOrder = (event: Event): void => {
+      setNavOrder((event as CustomEvent<string[]>).detail)
+    }
+    window.addEventListener(NAV_VISIBILITY_EVENT, onHidden)
+    window.addEventListener(NAV_ORDER_EVENT, onOrder)
+    return () => {
+      window.removeEventListener(NAV_VISIBILITY_EVENT, onHidden)
+      window.removeEventListener(NAV_ORDER_EVENT, onOrder)
+    }
   }, [])
 
   // 关闭开发者模式时，若正停留在开发者页面则退回首页
@@ -139,10 +159,11 @@ export function AppLayout(): React.JSX.Element {
     return location.pathname.startsWith(path)
   }
 
-  // 设置页里被关掉的项不渲染，其余顺序不变
-  const visibleNavItems = [...navItems, ...(developerMode ? devNavItems : [])].filter(
-    (item) => !hiddenNav.includes(item.path)
-  )
+  // 设置页里被关掉的项不渲染；顺序按保存的顺序，未列出的项（含自定义脚本）排最后
+  const visibleNavItems = sortNavItems(
+    [...navItems, ...(developerMode ? devNavItems : [])],
+    navOrder
+  ).filter((item) => !hiddenNav.includes(item.path))
 
   return (
     <div className="h-screen flex bg-[#F5F5F7]">

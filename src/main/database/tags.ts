@@ -1,5 +1,6 @@
 import { getDatabase } from './connection'
 import { getSetting, setSetting } from './settings'
+import { VISIBLE_SEC_UIDS, VISIBLE_USERS, visibleSecUidGate } from './visibility'
 import type { DbPost } from './posts'
 
 /**
@@ -408,7 +409,7 @@ export function getAllTags(): string[] {
       `SELECT DISTINCT t.name FROM post_tags pt
        JOIN tags t ON t.id = pt.tag_id
        JOIN posts p ON p.id = pt.post_id
-       WHERE p.sec_uid IN (SELECT sec_uid FROM users WHERE show_in_home = 1)
+       WHERE p.sec_uid IN ${VISIBLE_SEC_UIDS}
        ORDER BY t.name`
     )
     .all() as { name: string }[]
@@ -428,12 +429,16 @@ export function getTagOverviewStats(): TagOverviewStats {
     .prepare(
       `SELECT COUNT(*) as total,
         SUM(CASE WHEN analysis_tags IS NOT NULL OR manual_tags IS NOT NULL THEN 1 ELSE 0 END) as tagged
-       FROM posts`
+       FROM posts WHERE ${visibleSecUidGate()}`
     )
     .get() as { total: number; tagged: number }
-  const kinds = database.prepare('SELECT COUNT(DISTINCT tag_id) as c FROM post_tags').get() as {
-    c: number
-  }
+  const kinds = database
+    .prepare(
+      `SELECT COUNT(DISTINCT pt.tag_id) as c
+       FROM post_tags pt JOIN posts p ON p.id = pt.post_id
+       WHERE p.sec_uid IN ${VISIBLE_SEC_UIDS}`
+    )
+    .get() as { c: number }
   const total = row?.total || 0
   const tagged = row?.tagged || 0
   return { totalVideos: total, tagged, untagged: total - tagged, tagKinds: kinds.c }
@@ -457,6 +462,7 @@ export function getUserTagStats(): UserTagStats[] {
          COALESCE(SUM(CASE WHEN p.analysis_tags IS NOT NULL OR p.manual_tags IS NOT NULL THEN 1 ELSE 0 END), 0) as tagged
        FROM users u
        LEFT JOIN posts p ON p.sec_uid = u.sec_uid
+       WHERE ${VISIBLE_USERS}
        GROUP BY u.sec_uid
        ORDER BY u.nickname`
     )
@@ -483,7 +489,8 @@ export function getTagsWithFrequency(secUid?: string): TagFrequencyItem[] {
        FROM post_tags pt
        JOIN tags t ON t.id = pt.tag_id
        JOIN posts p ON p.id = pt.post_id
-       ${secUid ? 'WHERE p.sec_uid = ?' : ''}
+       WHERE p.sec_uid IN ${VISIBLE_SEC_UIDS}
+       ${secUid ? 'AND p.sec_uid = ?' : ''}
        GROUP BY t.id
        ORDER BY count DESC, t.name`
     )
@@ -515,9 +522,12 @@ export function getTagLibraryStats(): TagLibraryStats {
     .prepare(
       `SELECT
          (SELECT COUNT(*) FROM tags) AS total,
-         (SELECT COUNT(DISTINCT tag_id) FROM post_tags) AS used,
+         (SELECT COUNT(DISTINCT pt.tag_id) FROM post_tags pt
+            JOIN posts p ON p.id = pt.post_id
+            WHERE p.sec_uid IN ${VISIBLE_SEC_UIDS}) AS used,
          (SELECT COUNT(DISTINCT analysis_category) FROM posts
-            WHERE analysis_category IS NOT NULL AND analysis_category != '') AS categories`
+            WHERE analysis_category IS NOT NULL AND analysis_category != ''
+              AND ${visibleSecUidGate()}) AS categories`
     )
     .get() as { total: number; used: number; categories: number }
   return {
@@ -537,7 +547,8 @@ export function getTagCategories(): TagCategoryItem[] {
   return getDatabase()
     .prepare(
       `SELECT COALESCE(NULLIF(analysis_category, ''), '未分类') as category, COUNT(*) as count
-       FROM posts WHERE analysis_tags IS NOT NULL OR manual_tags IS NOT NULL
+       FROM posts WHERE (analysis_tags IS NOT NULL OR manual_tags IS NOT NULL)
+         AND ${visibleSecUidGate()}
        GROUP BY category ORDER BY count DESC`
     )
     .all() as TagCategoryItem[]
@@ -615,6 +626,10 @@ function buildTagWhere(
   const conditions: string[] = []
   const params: unknown[] = []
 
+  // 隐藏作者的作品在标签管理的一切查询与分面统计里都不出现。这条**不受 omit 影响** ——
+  // 门禁不是筛选维度，不能被分面自身排除掉，否则分面计数会把隐藏作品算回来。
+  conditions.push(visibleSecUidGate('posts.sec_uid'))
+
   if (filters?.secUid && !skip.has('user')) {
     conditions.push('posts.sec_uid = ?')
     params.push(filters.secUid)
@@ -672,7 +687,8 @@ function buildTagWhere(
   }
 }
 
-// 标签管理用的作品查询（不受 show_in_home 限制）。secUid 可选 —— 不传即跨用户全库查询。
+// 标签管理用的作品查询（隐藏作者的作品已由 buildTagWhere 的门禁排除）。
+// secUid 可选 —— 不传即跨可见用户全库查询。
 export function queryPostsForTags(
   filters?: TagPostFilters,
   page = 1,

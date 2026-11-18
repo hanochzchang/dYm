@@ -100,6 +100,11 @@ export function getDefaultAsrProviderId(): string | null {
   return first?.id ?? null
 }
 
+/** 转写结果的复用键：同协议同模型才复用（换提供方或换模型要重转） */
+export function asrEngineKey(provider: ResolvedAsrProvider): string {
+  return `${provider.protocol}:${provider.model}`
+}
+
 /** 没配置转写提供方时返回 null（分析流程据此跳过转写，而不是报错） */
 export function resolveAsrProvider(id?: string | null): ResolvedAsrProvider | null {
   const targetId = id ?? getDefaultAsrProviderId()
@@ -118,7 +123,13 @@ export function createAsrClientFor(id?: string | null): AsrClient | null {
 function validateInput(input: AsrProviderInput): void {
   if (!input.name?.trim()) throw new Error('请填写提供方名称')
   if (!VALID_PROTOCOLS.has(input.protocol)) throw new Error(`未知转写协议：${input.protocol}`)
-  if (!input.baseUrl?.trim()) throw new Error('请填写 API 地址')
+  if (!input.baseUrl?.trim()) {
+    throw new Error(
+      input.protocol === 'local-faster-whisper'
+        ? '请填写 faster-whisper-xxl.exe 路径'
+        : '请填写 API 地址'
+    )
+  }
   if (input.maxClipSeconds !== undefined) {
     const n = Number(input.maxClipSeconds)
     if (!Number.isInteger(n) || n < MIN_CLIP || n > MAX_CLIP) {
@@ -227,5 +238,11 @@ export async function verifyAsrProvider(
     extraForm: input.extraForm ?? {}
   })
   await client.verify()
-  return { ok: true, message: `连接成功：${input.model}` }
+  return {
+    ok: true,
+    message:
+      input.protocol === 'local-faster-whisper'
+        ? `本地模型已就绪：${input.model}`
+        : `连接成功：${input.model}`
+  }
 }

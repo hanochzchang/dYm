@@ -7,6 +7,7 @@ import {
   getAnalysisJob,
   getDatabase,
   getPostById,
+  getPostsWithoutTranscript,
   getSetting,
   getUnanalyzedPosts,
   insertAnalysisJob,
@@ -37,6 +38,7 @@ import { appEvents } from '../app-events'
 import { createClientFor, getProviderView, resolveProvider } from './providers'
 import { RateLimiter } from './rate-limit'
 import { analyzePost, type PipelineOptions } from './pipeline'
+import { transcribePost, type TranscribePostOptions } from './transcribe-post'
 import {
   buildReducePrompt,
   buildSegmentPrompt,
@@ -228,6 +230,18 @@ function selectPostIds(input: CreateAnalysisJobInput): number[] {
   if (input.postIds?.length) {
     return Array.from(new Set(input.postIds.filter((id) => Number.isInteger(id) && id > 0)))
   }
+  // 只转写作业按「有没有转写结果」圈选，与是否已分析无关
+  if (input.kind === 'transcribe') {
+    if (input.onlyUntranscribed !== false) {
+      return getPostsWithoutTranscript(input.secUid).map((p) => p.id)
+    }
+    const rows = getDatabase()
+      .prepare(
+        `SELECT id FROM posts ${input.secUid ? 'WHERE sec_uid = ?' : ''} ORDER BY downloaded_at DESC`
+      )
+      .all(...(input.secUid ? [input.secUid] : [])) as { id: number }[]
+    return rows.map((r) => r.id)
+  }
   const onlyUnanalyzed = input.onlyUnanalyzed !== false
   if (onlyUnanalyzed) return getUnanalyzedPosts(input.secUid).map((p) => p.id)
   const rows = getDatabase()
@@ -239,6 +253,7 @@ function selectPostIds(input: CreateAnalysisJobInput): number[] {
 }
 
 function defaultJobName(input: CreateAnalysisJobInput, count: number): string {
+  if (input.kind === 'transcribe') return count === 1 ? '转写 1 条作品' : `转写 ${count} 条作品`
   if (input.kind === 'reanalyze')
     return count === 1 ? '重新分析 1 条作品' : `重新分析 ${count} 条作品`
   if (input.kind === 'auto') return `自动分析 ${count} 条新作品`
@@ -252,30 +267,39 @@ function defaultJobName(input: CreateAnalysisJobInput, count: number): string {
 }
 
 export function createJob(input: CreateAnalysisJobInput): AnalysisJobView {
-  // 先校验提供方，错在这里比排进队列后才失败友好
-  const provider = resolveProvider(input.providerId ?? null)
+  const kind = input.kind ?? 'analyze'
+  const transcribeOnly = kind === 'transcribe'
+  // 只转写不碰 AI 模型，不需要 AI 提供方；其余作业先校验提供方，错在这里比排进队列后才失败友好
+  const provider = transcribeOnly ? null : resolveProvider(input.providerId ?? null)
   let postIds = selectPostIds(input)
-  if (input.kind === 'auto') {
+  if (kind === 'auto') {
     // 自动入队不该把还在别的作业里排队的作品再排一遍
     const busy = activeJobPostIds(postIds)
     postIds = postIds.filter((id) => !busy.has(id))
   }
-  if (!postIds.length) throw new Error('没有需要分析的作品')
+  if (!postIds.length) {
+    throw new Error(transcribeOnly ? '没有需要转写的作品' : '没有需要分析的作品')
+  }
 
   const settings = getAnalysisSettings()
   // 转写提供方在建作业时就定下来：中途改设置不影响已排队的作业
-  const asrProviderId = settings.transcribe
+  const asrProviderId = transcribeOnly
     ? (input.asrProviderId ?? getDefaultAsrProviderId())
-    : null
+    : settings.transcribe
+      ? (input.asrProviderId ?? getDefaultAsrProviderId())
+      : null
+  if (transcribeOnly && !asrProviderId) {
+    throw new Error('还没有配置语音转写服务，请先在「语音转写服务」里添加')
+  }
   if (asrProviderId) resolveAsrProvider(asrProviderId)
   const { prompt, autoAnalyze: _auto, ...rest } = settings
   void _auto
   const row = insertAnalysisJob({
     name: input.name?.trim() || defaultJobName(input, postIds.length),
-    kind: input.kind ?? 'analyze',
-    providerId: provider.id,
+    kind,
+    providerId: provider?.id ?? null,
     prompt,
-    options: { ...rest, asrProviderId },
+    options: { ...rest, transcribe: transcribeOnly || rest.transcribe, asrProviderId },
     postIds,
     priority: !!input.priority
   })
@@ -413,10 +437,16 @@ async function runJob(job: AnalysisJobRow): Promise<void> {
   try {
     updateJobStatus(job.id, 'running', { started: true, error: null })
     broadcast()
-    const provider = resolveProvider(job.provider_id)
-    const client = createClientFor(provider.id)
-    const limiter = limiterFor(provider.id, options.rpm)
-    const asrProvider = options.transcribe ? resolveAsrProvider(options.asrProviderId) : null
+    const transcribeOnly = job.kind === 'transcribe'
+    const provider = transcribeOnly ? null : resolveProvider(job.provider_id)
+    const client = provider ? createClientFor(provider.id) : null
+    const limiter = provider ? limiterFor(provider.id, options.rpm) : null
+    // 只转写作业不需要 AI 提供方；转写提供方即便全局开关关着也要用（作业本身就是转写）
+    const asrProvider =
+      transcribeOnly || options.transcribe ? resolveAsrProvider(options.asrProviderId) : null
+    if (transcribeOnly && !asrProvider) {
+      throw new Error('没有可用的转写服务，请检查「语音转写服务」配置')
+    }
     const asr = asrProvider
       ? {
           client: createAsrClient(asrProvider),
@@ -435,6 +465,17 @@ async function runJob(job: AnalysisJobRow): Promise<void> {
         while (!run.controller.signal.aborted) {
           const [postId] = claimPendingItems(job.id, 1)
           if (postId === undefined) return
+          if (transcribeOnly) {
+            if (!asr) return
+            await processTranscribeItem(job.id, postId, run, {
+              client: asr.client,
+              provider: asr.provider,
+              limiter: asr.limiter,
+              signal: run.controller.signal
+            })
+            continue
+          }
+          if (!client || !limiter || !provider) return
           await processItem(job.id, postId, run, {
             client,
             limiter,
@@ -546,6 +587,52 @@ async function processItem(
       return
     }
     console.error(`[AI] 作品 ${post.aweme_id} 分析失败: ${message}`)
+    finishItem(jobId, postId, 'failed', message)
+    broadcast({ jobId, postId, ok: false, title, error: message })
+  } finally {
+    run.current.delete(postId)
+  }
+}
+
+async function processTranscribeItem(
+  jobId: number,
+  postId: number,
+  run: ActiveRun,
+  options: Omit<TranscribePostOptions, 'onStage'>
+): Promise<void> {
+  const post = getPostById(postId)
+  if (!post) {
+    finishItem(jobId, postId, 'skipped', '作品已不存在')
+    broadcast()
+    return
+  }
+  const title = postTitle(post)
+  run.current.set(postId, title)
+  broadcast()
+  const onStage = (stage: AnalysisStage, detail?: string): void => {
+    run.current.set(
+      postId,
+      `${title} · ${ANALYSIS_STAGE_LABELS[stage]}${detail ? ` ${detail}` : ''}`
+    )
+    broadcast()
+  }
+  try {
+    const result = await transcribePost(post, { ...options, onStage })
+    if (result.skipped) {
+      finishItem(jobId, postId, 'skipped', result.skipped)
+      broadcast({ jobId, postId, ok: false, title, error: result.skipped })
+      return
+    }
+    finishItem(jobId, postId, 'done', null)
+    console.log(
+      `[ASR] 作品 ${post.aweme_id} 转写完成：${result.segments} 段，` +
+        `新增 ${result.newWindows}/${result.windows} 块`
+    )
+    broadcast({ jobId, postId, ok: true, title, error: null })
+  } catch (error) {
+    if (run.controller.signal.aborted) return
+    const message = describeError(error)
+    console.error(`[ASR] 作品 ${post.aweme_id} 转写失败: ${message}`)
     finishItem(jobId, postId, 'failed', message)
     broadcast({ jobId, postId, ok: false, title, error: message })
   } finally {

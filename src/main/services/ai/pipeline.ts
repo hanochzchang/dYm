@@ -19,6 +19,8 @@ import { probeMedia } from './ffmpeg'
 import { planAnalysis, type AnalysisPlan, type AnalysisWindow, type PlanOptions } from './plan'
 import { extractWindowFrames, findVideoFile, loadGalleryImages, type FrameSet } from './frames'
 import {
+  AsrConfigError,
+  asrEngineKey,
   transcribeWindow,
   transcriptText,
   type AsrClient,
@@ -97,10 +99,6 @@ async function complete(
   }
 }
 
-function engineOf(provider: ResolvedAsrProvider): string {
-  return `${provider.protocol}:${provider.model}`
-}
-
 function covers(coverage: { start: number; end: number }[], window: AnalysisWindow): boolean {
   return coverage.some((c) => c.start <= window.start + 0.5 && c.end >= window.end - 0.5)
 }
@@ -113,9 +111,12 @@ interface WindowResult {
   asrError: string | null
 }
 
-/** 密钥错误 / 无权限是配置问题，继续跑下去每条都会失败，直接让条目失败提醒用户 */
+/** 密钥错误 / 无权限 / 本地 exe 模型路径不对都是配置问题，继续跑下去每条都会失败，直接让条目失败提醒用户 */
 function isAsrConfigError(error: unknown): boolean {
-  return error instanceof AiHttpError && (error.status === 401 || error.status === 403)
+  return (
+    error instanceof AsrConfigError ||
+    (error instanceof AiHttpError && (error.status === 401 || error.status === 403))
+  )
 }
 
 /** 一段的素材：转写（可复用上次结果）+ 抽帧 */
@@ -137,7 +138,7 @@ async function gatherWindow(
     options.onStage?.('transcribe', progress)
     if (
       reusable &&
-      reusable.engine === engineOf(options.asr.provider) &&
+      reusable.engine === asrEngineKey(options.asr.provider) &&
       covers(reusable.coverage, window)
     ) {
       const segments = reusable.segments.filter(
@@ -289,7 +290,7 @@ export async function analyzePost(post: DbPost, options: PipelineOptions): Promi
     const language = transcribedResults.find((r) => r.transcript!.language)?.transcript!.language
     savePostTranscript({
       postId: post.id,
-      engine: engineOf(asrActive.provider),
+      engine: asrEngineKey(asrActive.provider),
       language: language ?? existing?.language ?? null,
       partial: plan.partial || transcribedResults.length < results.length,
       coverage: transcribedResults.map((r) => ({ start: r.window.start, end: r.window.end })),
@@ -368,7 +369,7 @@ export async function analyzePost(post: DbPost, options: PipelineOptions): Promi
   if (!info.hasAudio) analysis.flags.noSpeech = true
 
   return persist(post, analysis, options, {
-    asrEngine: asrActive ? engineOf(asrActive.provider) : null,
+    asrEngine: asrActive ? asrEngineKey(asrActive.provider) : null,
     asrError: asrErrors.length
       ? `${asrErrors.length}/${results.length} 段转写失败：${asrErrors[0]}`
       : null,

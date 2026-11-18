@@ -314,7 +314,17 @@ export default function DashboardPage() {
                     contentStyle={tooltipStyle}
                     formatter={(value) => [value ?? 0, '视频数']}
                   />
-                  <Bar dataKey="count" fill={CHART_BLUE} radius={[0, 5, 5, 0]} barSize={14} />
+                  <Bar
+                    dataKey="count"
+                    fill={CHART_BLUE}
+                    radius={[0, 5, 5, 0]}
+                    barSize={14}
+                    cursor="pointer"
+                    onClick={(data) => {
+                      const secUid = (data?.payload as UserDistItem | undefined)?.sec_uid
+                      if (secUid) navigate(`/tags?user=${encodeURIComponent(secUid)}`)
+                    }}
+                  />
                 </BarChart>
               </ResponsiveContainer>
             ) : (
@@ -351,7 +361,17 @@ export default function DashboardPage() {
                     contentStyle={tooltipStyle}
                     formatter={(value) => [value ?? 0, '出现次数']}
                   />
-                  <Bar dataKey="count" fill="#30D158" radius={[4, 4, 0, 0]} barSize={18} />
+                  <Bar
+                    dataKey="count"
+                    fill="#30D158"
+                    radius={[4, 4, 0, 0]}
+                    barSize={18}
+                    cursor="pointer"
+                    onClick={(data) => {
+                      const tag = (data?.payload as TagStatItem | undefined)?.tag
+                      if (tag) navigate(`/tags?tags=${encodeURIComponent(tag)}`)
+                    }}
+                  />
                 </BarChart>
               </ResponsiveContainer>
             ) : (
@@ -382,7 +402,17 @@ export default function DashboardPage() {
                     formatter={(value) => [value ?? 0, '视频数']}
                     labelFormatter={(l) => `等级 ${l}`}
                   />
-                  <Bar dataKey="count" fill="#FF9F0A" radius={[4, 4, 0, 0]} barSize={28} />
+                  <Bar
+                    dataKey="count"
+                    fill="#FF9F0A"
+                    radius={[4, 4, 0, 0]}
+                    barSize={28}
+                    cursor="pointer"
+                    onClick={(data) => {
+                      const level = (data?.payload as LevelDistItem | undefined)?.level
+                      if (level != null) navigate(`/tags?minLevel=${level}&maxLevel=${level}`)
+                    }}
+                  />
                 </BarChart>
               </ResponsiveContainer>
             ) : (

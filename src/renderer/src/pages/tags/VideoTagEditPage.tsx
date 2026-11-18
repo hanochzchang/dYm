@@ -10,11 +10,13 @@ import {
   Sparkles,
   Loader2,
   RotateCw,
+  Captions,
   Hand
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { MediaViewer } from '@/components/media/MediaViewer'
+import { AuthorPostsDialog } from '@/components/media/AuthorPostsDialog'
 import { parseTags } from '@/lib/utils'
 import { PageHeader, BackLink } from '@/components/layout/PageHeader'
 import { parseTagFilters, stripNavMarkers } from './filters'
@@ -28,11 +30,15 @@ export default function VideoTagEditPage(): React.JSX.Element {
   const [post, setPost] = useState<DbPost | null>(null)
   const [cover, setCover] = useState<string | null>(null)
   const [viewerOpen, setViewerOpen] = useState(false)
+  const [authorDialogOpen, setAuthorDialogOpen] = useState(false)
   const [input, setInput] = useState('')
   const [suggestions, setSuggestions] = useState<string[]>([])
-  // 记录哪条作品正在等待重新分析结果；切换作品后自然不再显示「分析中」
-  const [reanalyzingId, setReanalyzingId] = useState<number | null>(null)
-  const reanalyzing = reanalyzingId === id
+  // 记录哪条作品正在等待重新分析 / 转写结果；切换作品后自然不再显示「分析中」
+  const [pending, setPending] = useState<{ id: number; kind: 'reanalyze' | 'transcribe' } | null>(
+    null
+  )
+  const reanalyzing = pending?.id === id && pending.kind === 'reanalyze'
+  const transcribing = pending?.id === id && pending.kind === 'transcribe'
   const [siblings, setSiblings] = useState<number[]>([])
   const [status, setStatus] = useState<'loading' | 'ready' | 'notFound' | 'error'>('loading')
   const [errorMessage, setErrorMessage] = useState('')
@@ -83,31 +89,34 @@ export default function VideoTagEditPage(): React.JSX.Element {
       })
   }, [load])
 
-  // 本页发起的重新分析在队列里跑；等到这条作品完成再刷新（别的页面发起的也会命中）。
+  // 本页发起的分析 / 转写作业在队列里跑；等到这条作品完成再刷新（别的页面发起的也会命中）。
   // 作业被取消 / 整体失败时不会有 itemDone，所以还要盯着作业本身的状态收尾。
-  const reanalyzeJobRef = useRef<number | null>(null)
+  const pendingJobRef = useRef<{ id: number; kind: 'reanalyze' | 'transcribe' } | null>(null)
   useEffect(() => {
     const unsub = window.api.analysis.onQueue((event) => {
       const done = event.itemDone
       if (done && done.postId === id) {
-        reanalyzeJobRef.current = null
-        setReanalyzingId((prev) => (prev === id ? null : prev))
+        const job = event.jobs.find((j) => j.id === done.jobId)
+        const label = job?.kind === 'transcribe' ? '转写' : '重新分析'
+        pendingJobRef.current = null
+        setPending((prev) => (prev?.id === id ? null : prev))
         if (done.ok) {
           load()
           setDetailKey((k) => k + 1)
-        } else toast.error(`重新分析失败: ${done.error || '未知错误'}`)
+        } else toast.error(`${label}失败: ${done.error || '未知错误'}`)
         return
       }
-      const jobId = reanalyzeJobRef.current
-      if (jobId === null) return
-      const job = event.jobs.find((j) => j.id === jobId)
+      const pendingJob = pendingJobRef.current
+      if (!pendingJob) return
+      const job = event.jobs.find((j) => j.id === pendingJob.id)
       const active =
         job && (job.status === 'queued' || job.status === 'running' || job.status === 'paused')
       if (active) return
-      reanalyzeJobRef.current = null
-      setReanalyzingId((prev) => (prev === id ? null : prev))
-      if (job?.error) toast.error(`重新分析未完成: ${job.error}`)
-      else if (job?.status === 'cancelled') toast.info('重新分析已取消')
+      pendingJobRef.current = null
+      setPending((prev) => (prev?.id === id ? null : prev))
+      const label = pendingJob.kind === 'transcribe' ? '转写' : '重新分析'
+      if (job?.error) toast.error(`${label}未完成: ${job.error}`)
+      else if (job?.status === 'cancelled') toast.info(`${label}已取消`)
     })
     return unsub
   }, [id, load])
@@ -151,6 +160,8 @@ export default function VideoTagEditPage(): React.JSX.Element {
    */
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
+      // 作者弹窗开着时方向键归它（翻页、切弹窗里的作品），别把背后的页面作品翻走
+      if (authorDialogOpen) return
       const el = e.target as HTMLElement | null
       if (el?.tagName === 'INPUT' || el?.tagName === 'TEXTAREA' || el?.isContentEditable) return
       const toPrev = e.key === 'ArrowUp' || (!viewerOpen && e.key === 'ArrowLeft')
@@ -162,7 +173,7 @@ export default function VideoTagEditPage(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [prevId, nextId, go, viewerOpen])
+  }, [prevId, nextId, go, viewerOpen, authorDialogOpen])
 
   if (status === 'loading') {
     return <div className="p-10 text-sm text-[#A1A1A6]">加载中…</div>
@@ -218,18 +229,34 @@ export default function VideoTagEditPage(): React.JSX.Element {
   }
 
   const handleReanalyze = async (): Promise<void> => {
-    setReanalyzingId(id)
+    setPending({ id, kind: 'reanalyze' })
     try {
       const job = await window.api.analysis.createJob({
         kind: 'reanalyze',
         postIds: [id],
         priority: true
       })
-      reanalyzeJobRef.current = job.id
+      pendingJobRef.current = { id: job.id, kind: 'reanalyze' }
       toast.info('已加入分析队列，完成后自动刷新')
     } catch (error) {
-      setReanalyzingId((prev) => (prev === id ? null : prev))
+      setPending((prev) => (prev?.id === id && prev.kind === 'reanalyze' ? null : prev))
       toast.error(`重新分析失败: ${(error as Error).message}`)
+    }
+  }
+
+  const handleTranscribe = async (): Promise<void> => {
+    setPending({ id, kind: 'transcribe' })
+    try {
+      const job = await window.api.analysis.createJob({
+        kind: 'transcribe',
+        postIds: [id],
+        priority: true
+      })
+      pendingJobRef.current = { id: job.id, kind: 'transcribe' }
+      toast.info('已加入转写队列，完成后自动刷新')
+    } catch (error) {
+      setPending((prev) => (prev?.id === id && prev.kind === 'transcribe' ? null : prev))
+      toast.error(`转写失败: ${(error as Error).message}`)
     }
   }
 
@@ -298,14 +325,33 @@ export default function VideoTagEditPage(): React.JSX.Element {
           <div className="flex-1 space-y-5">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold text-[#1D1D1F]">标签编辑</h2>
-              <Button variant="outline" onClick={handleReanalyze} disabled={reanalyzing}>
-                {reanalyzing ? (
-                  <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-                ) : (
-                  <RotateCw className="h-4 w-4 mr-1.5" />
-                )}
-                {reanalyzing ? '分析中…' : '重新分析'}
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  onClick={handleTranscribe}
+                  disabled={transcribing || reanalyzing}
+                  title="只调用语音转写服务生成口播文稿，不抽帧、不调 AI"
+                >
+                  {transcribing ? (
+                    <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                  ) : (
+                    <Captions className="h-4 w-4 mr-1.5" />
+                  )}
+                  {transcribing ? '转写中…' : '转写文本'}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={handleReanalyze}
+                  disabled={reanalyzing || transcribing}
+                >
+                  {reanalyzing ? (
+                    <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                  ) : (
+                    <RotateCw className="h-4 w-4 mr-1.5" />
+                  )}
+                  {reanalyzing ? '分析中…' : '重新分析'}
+                </Button>
+              </div>
             </div>
 
             <TagSection
@@ -375,7 +421,21 @@ export default function VideoTagEditPage(): React.JSX.Element {
         </div>
       </div>
 
-      <MediaViewer post={post} open={viewerOpen} onOpenChange={setViewerOpen} />
+      <MediaViewer
+        post={post}
+        open={viewerOpen}
+        onOpenChange={setViewerOpen}
+        onAuthorClick={() => {
+          setViewerOpen(false)
+          setAuthorDialogOpen(true)
+        }}
+      />
+
+      <AuthorPostsDialog
+        open={authorDialogOpen}
+        onOpenChange={setAuthorDialogOpen}
+        user={{ sec_uid: post.sec_uid, nickname: post.nickname }}
+      />
     </div>
   )
 }

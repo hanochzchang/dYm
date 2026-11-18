@@ -187,8 +187,13 @@ export interface CodexAuthStatus {
  * - openai-transcriptions：multipart 上传到 /audio/transcriptions（OpenAI、Groq、Mistral、硅基流动、智谱、阶跃）
  * - openai-chat-audio：/chat/completions 里塞 input_audio（阿里百炼 qwen3-asr-flash、OpenAI 音频对话模型）
  * - gemini-audio：Gemini generateContent 内联音频
+ * - local-faster-whisper：本机 faster-whisper-xxl.exe（baseUrl 存 exe 路径，extraForm 存 model_dir / device）
  */
-export type AsrProtocol = 'openai-transcriptions' | 'openai-chat-audio' | 'gemini-audio'
+export type AsrProtocol =
+  | 'openai-transcriptions'
+  | 'openai-chat-audio'
+  | 'gemini-audio'
+  | 'local-faster-whisper'
 
 export const ASR_PROTOCOLS: { value: AsrProtocol; label: string; description: string }[] = [
   {
@@ -205,6 +210,11 @@ export const ASR_PROTOCOLS: { value: AsrProtocol; label: string; description: st
     value: 'gemini-audio',
     label: 'Google Gemini（音频理解）',
     description: 'Gemini generateContent 内联音频，顺带要求按时间段输出'
+  },
+  {
+    value: 'local-faster-whisper',
+    label: '本地 Faster-Whisper（离线）',
+    description: '调用 faster-whisper-xxl.exe 转写，音频和模型都不出本机，不消耗 API'
   }
 ]
 
@@ -416,7 +426,7 @@ export type AnalysisJobStatus =
 
 export type AnalysisJobItemStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped'
 
-export type AnalysisJobKind = 'analyze' | 'reanalyze' | 'auto'
+export type AnalysisJobKind = 'analyze' | 'reanalyze' | 'auto' | 'transcribe'
 
 export interface AnalysisJobView {
   id: number
@@ -457,6 +467,8 @@ export interface CreateAnalysisJobInput {
   secUid?: string
   /** 默认 true：只分析未分析过的 */
   onlyUnanalyzed?: boolean
+  /** 只转写作业用：默认 true，只选还没有转写结果的作品 */
+  onlyUntranscribed?: boolean
   /** 不传用默认提供方 */
   providerId?: string
   /** 转写提供方；不传用默认，设置里关了转写则忽略 */

@@ -849,7 +849,7 @@ export default function TagWorkbenchPage(): React.JSX.Element {
             )}
 
             <div ref={scrollRef} className="flex-1 overflow-y-auto p-5">
-              <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-5">
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-5">
                 {posts.map((p) => (
                   <VideoCard
                     key={p.id}

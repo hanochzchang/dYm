@@ -191,6 +191,13 @@ const postAPI = {
   openFolder: (secUid: string, folderName: string): Promise<void> =>
     ipcRenderer.invoke('post:openFolder', secUid, folderName),
   scanBroken: (): Promise<BrokenPostInfo[]> => ipcRenderer.invoke('post:scanBroken'),
+  scanMissingMusic: (): Promise<DbPost[]> => ipcRenderer.invoke('post:scanMissingMusic'),
+  fillMusic: (
+    awemeId: string
+  ): Promise<{ status: 'filled' | 'no-music' | 'failed'; error?: string }> =>
+    ipcRenderer.invoke('post:fillMusic', awemeId),
+  setMusicIgnored: (postId: number, ignored: boolean): Promise<void> =>
+    ipcRenderer.invoke('post:setMusicIgnored', postId, ignored),
   redownload: (awemeId: string): Promise<{ success: boolean; message: string }> =>
     ipcRenderer.invoke('post:redownload', awemeId),
   batchRedownload: (awemeIds: string[]): Promise<{ success: number; failed: number }> =>
@@ -327,6 +334,11 @@ const localImportAPI = {
     ipcRenderer.invoke('import:start', input)
 }
 
+const xiaohongshuAPI = {
+  import: (raw: string): Promise<XiaohongshuImportResult> =>
+    ipcRenderer.invoke('xiaohongshu:import', raw)
+}
+
 const systemAPI = {
   getResourceUsage: (): Promise<SystemResourceInfo> =>
     ipcRenderer.invoke('system:getResourceUsage'),
@@ -450,6 +462,7 @@ const api = {
   tag: tagAPI,
   video: videoAPI,
   localImport: localImportAPI,
+  xiaohongshu: xiaohongshuAPI,
   system: systemAPI,
   migration: migrationAPI,
   clipboard: clipboardAPI,

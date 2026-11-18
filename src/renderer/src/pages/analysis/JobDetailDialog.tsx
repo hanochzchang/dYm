@@ -119,7 +119,7 @@ export function JobDetailDialog({ job, onOpenChange }: JobDetailDialogProps): Re
           <DialogDescription>
             {job && (
               <>
-                {job.providerName ?? '默认提供方'} · 创建于 {formatUnixTime(job.createdAt)}
+                {job.kind === 'transcribe' ? '只转写' : (job.providerName ?? '默认提供方')} · 创建于 {formatUnixTime(job.createdAt)}
                 {job.finishedAt ? ` · 结束于 ${formatUnixTime(job.finishedAt)}` : ''}
               </>
             )}

@@ -438,8 +438,9 @@ async function handleAuthorSettings(
     return
   }
 
+  // 隐藏的作者对网页端等同不存在（不泄露存在性）
   const user = getUserBySecUid(secUid)
-  if (!user) {
+  if (!user || user.show_in_home === 0) {
     respondError(response, 404, 'Author not found')
     return
   }
@@ -498,8 +499,9 @@ async function handleAuthorSync(request: IncomingMessage, response: ServerRespon
     return
   }
 
+  // 隐藏的作者对网页端等同不存在（不泄露存在性）
   const user = getUserBySecUid(secUid)
-  if (!user) {
+  if (!user || user.show_in_home === 0) {
     respondError(response, 404, 'Author not found')
     return
   }
@@ -593,8 +595,9 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       respondError(response, 400, 'Missing secUid')
       return
     }
+    // 隐藏的作者对网页端等同不存在（不泄露存在性）
     const user = getUserBySecUid(secUid)
-    if (!user) {
+    if (!user || user.show_in_home === 0) {
       respondError(response, 404, 'Author not found')
       return
     }

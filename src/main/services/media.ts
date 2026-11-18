@@ -40,47 +40,52 @@ export function isPathInDownloadRoot(filePath: string): boolean {
   return resolvedPath === downloadRoot || resolvedPath.startsWith(downloadRoot + sep)
 }
 
+export const AUDIO_FILE_PATTERN = /\.(mp3|m4a|aac|wav|ogg)$/i
+
+/** 作品文件夹：先认 folder_name，旧命名再按后缀匹配；找不到返回 null */
+export function resolvePostFolder(secUid: string, folderName: string): string | null {
+  const basePath = join(getDownloadPath(), secUid)
+  if (!existsSync(basePath)) return null
+
+  const exactPath = join(basePath, folderName)
+  if (existsSync(exactPath)) return exactPath
+
+  try {
+    const folders = readdirSync(basePath)
+    for (const folder of folders) {
+      if (folder.endsWith(folderName) || folder.includes(`_${folderName}`)) {
+        return join(basePath, folder)
+      }
+    }
+  } catch {
+    return null
+  }
+
+  return null
+}
+
 export function findMediaFiles(
   secUid: string,
   folderName: string,
   awemeType: number
 ): MediaFiles | null {
-  const basePath = join(getDownloadPath(), secUid)
-  if (!existsSync(basePath)) return null
-
-  let targetFolder: string | null = null
-  const exactPath = join(basePath, folderName)
-
-  if (existsSync(exactPath)) {
-    targetFolder = exactPath
-  } else {
-    try {
-      const folders = readdirSync(basePath)
-      for (const folder of folders) {
-        if (folder.endsWith(folderName) || folder.includes(`_${folderName}`)) {
-          targetFolder = join(basePath, folder)
-          break
-        }
-      }
-    } catch {
-      return null
-    }
-  }
-
+  const targetFolder = resolvePostFolder(secUid, folderName)
   if (!targetFolder) return null
 
   try {
     const files = readdirSync(targetFolder)
     const coverFile = files.find((f) => f.includes('_cover.'))
     const cover = coverFile ? toUrlPath(join(targetFolder, coverFile)) : undefined
-    const musicFile = files.find((f) => /\.(mp3|m4a|aac|wav|ogg)$/i.test(f))
+    const musicFile = files.find((f) => AUDIO_FILE_PATTERN.test(f))
     const music = musicFile ? toUrlPath(join(targetFolder, musicFile)) : undefined
 
     if (awemeType === 68) {
+      // 结尾序号按数值比，否则 _10 会排到 _2 前面（图片顺序和动态图配对顺序都被前端直接采用）
+      const byName = new Intl.Collator(undefined, { numeric: true }).compare
       const imageFiles = files
         .filter((f) => /\.(webp|jpg|jpeg|png)$/i.test(f) && !f.includes('_cover'))
-        .sort()
-      const videoFiles = files.filter((f) => /\.mp4$/i.test(f)).sort()
+        .sort(byName)
+      const videoFiles = files.filter((f) => /\.mp4$/i.test(f)).sort(byName)
       const stripExt = (f: string): string => f.replace(/\.[^.]+$/, '')
       const extractIndex = (f: string): string | null => {
         const m = stripExt(f).match(/(\d+)(?!.*\d)/)

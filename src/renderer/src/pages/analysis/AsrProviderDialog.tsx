@@ -54,6 +54,28 @@ const EMPTY_FORM: FormState = {
   extraForm: ''
 }
 
+/** 本地转写预设：默认指向 PotPlayer 自带的 faster-whisper 和模型目录，都可在表单里改 */
+const LOCAL_PRESET = {
+  name: '本地 Faster-Whisper',
+  exePath: 'E:\\PotPlayer\\Engine\\Faster-Whisper-XXL\\faster-whisper-xxl.exe',
+  modelDir: 'E:\\PotPlayer\\Model',
+  model: 'large-v3-turbo',
+  device: 'cuda',
+  maxClipSeconds: '1800'
+}
+
+function localForm(): FormState {
+  return {
+    name: LOCAL_PRESET.name,
+    protocol: 'local-faster-whisper',
+    baseUrl: LOCAL_PRESET.exePath,
+    model: LOCAL_PRESET.model,
+    apiKey: '',
+    maxClipSeconds: LOCAL_PRESET.maxClipSeconds,
+    extraForm: `model_dir=${LOCAL_PRESET.modelDir}\ndevice=${LOCAL_PRESET.device}`
+  }
+}
+
 function extraToText(extra: Record<string, string>): string {
   return Object.entries(extra)
     .map(([k, v]) => `${k}=${v}`)
@@ -167,6 +189,10 @@ export function AsrProviderDialog({
   const protocolMeta = ASR_PROTOCOLS.find((p) => p.value === form.protocol)
   const cn = ASR_PROVIDER_TEMPLATES.filter((t) => t.region === 'cn')
   const global = ASR_PROVIDER_TEMPLATES.filter((t) => t.region === 'global')
+  const isLocal = form.protocol === 'local-faster-whisper'
+  const extra = textToExtra(form.extraForm)
+  const setExtra = (key: string, value: string): void =>
+    setForm((f) => ({ ...f, extraForm: extraToText({ ...textToExtra(f.extraForm), [key]: value }) }))
 
   return (
     <Dialog open={open} onOpenChange={(o) => !saving && onOpenChange(o)}>
@@ -175,8 +201,10 @@ export function AsrProviderDialog({
           <DialogTitle>{provider ? '编辑转写服务' : '添加语音转写服务'}</DialogTitle>
           <DialogDescription>
             {step === 'template'
-              ? '选一个服务作为起点；都是云端 API，不需要本地模型'
-              : '密钥只保存在本机，并使用系统安全存储加密'}
+              ? '选一个服务作为起点；云端 API 或本地离线模型都可以'
+              : isLocal
+                ? '本地转写：音频和模型都不出本机，不消耗 API'
+                : '密钥只保存在本机，并使用系统安全存储加密'}
           </DialogDescription>
         </DialogHeader>
 
@@ -200,6 +228,23 @@ export function AsrProviderDialog({
                 setStep('form')
               }}
             />
+            <div>
+              <p className="text-[11px] font-medium text-[#A1A1A6] mb-2">本地</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setTemplate(null)
+                  setForm(localForm())
+                  setStep('form')
+                }}
+                className="w-full text-left rounded-xl border border-[#E5E5E7] p-4 hover:border-[#0A84FF] hover:bg-[#F5F9FF] transition-colors"
+              >
+                <p className="text-sm font-medium text-[#1D1D1F]">本地 Faster-Whisper（离线）</p>
+                <p className="text-[11px] text-[#A1A1A6] mt-1">
+                  用本机 faster-whisper-xxl.exe 转写，不联网、不耗 API
+                </p>
+              </button>
+            </div>
             <button
               type="button"
               onClick={() => {
@@ -248,40 +293,84 @@ export function AsrProviderDialog({
               </Select>
             </Field>
 
-            <Field label="接口地址">
+            <Field
+              label={isLocal ? '程序路径' : '接口地址'}
+              hint={isLocal ? 'faster-whisper-xxl.exe 的完整路径' : undefined}
+            >
               <Input
                 value={form.baseUrl}
                 onChange={(e) => setForm({ ...form, baseUrl: e.target.value })}
-                placeholder="https://api.example.com/v1"
-                className="font-mono"
-              />
-            </Field>
-
-            <Field label="模型">
-              <Input
-                value={form.model}
-                onChange={(e) => setForm({ ...form, model: e.target.value })}
-                placeholder="例如：whisper-large-v3-turbo"
+                placeholder={
+                  isLocal
+                    ? 'E:\\…\\Faster-Whisper-XXL\\faster-whisper-xxl.exe'
+                    : 'https://api.example.com/v1'
+                }
                 className="font-mono"
               />
             </Field>
 
             <Field
-              label="API Key"
-              hint={provider?.hasCredential ? '留空表示沿用已保存的密钥' : undefined}
+              label={isLocal ? '模型名' : '模型'}
+              hint={isLocal ? '会到模型目录里找 faster-whisper-<模型名> 文件夹' : undefined}
             >
               <Input
-                type="password"
-                value={form.apiKey}
-                onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
-                placeholder={provider?.hasCredential ? '••••••••（已保存）' : 'sk-…'}
+                value={form.model}
+                onChange={(e) => setForm({ ...form, model: e.target.value })}
+                placeholder={isLocal ? 'large-v3-turbo' : '例如：whisper-large-v3-turbo'}
                 className="font-mono"
-                autoComplete="off"
               />
             </Field>
 
+            {isLocal ? (
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="模型目录" hint="例：E:\\PotPlayer\\Model">
+                  <Input
+                    value={extra.model_dir ?? ''}
+                    onChange={(e) => setExtra('model_dir', e.target.value)}
+                    placeholder="包含 faster-whisper-* 文件夹的目录"
+                    className="font-mono"
+                  />
+                </Field>
+                <Field label="设备" hint="有 NVIDIA 显卡选 CUDA，否则选 CPU">
+                  <Select
+                    value={extra.device || 'cpu'}
+                    onValueChange={(v) => setExtra('device', v)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="cuda">CUDA（显卡）</SelectItem>
+                      <SelectItem value="cpu">CPU</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Field>
+              </div>
+            ) : (
+              <Field
+                label="API Key"
+                hint={provider?.hasCredential ? '留空表示沿用已保存的密钥' : undefined}
+              >
+                <Input
+                  type="password"
+                  value={form.apiKey}
+                  onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
+                  placeholder={provider?.hasCredential ? '••••••••（已保存）' : 'sk-…'}
+                  className="font-mono"
+                  autoComplete="off"
+                />
+              </Field>
+            )}
+
             <div className="grid grid-cols-2 gap-4">
-              <Field label="单段音频上限（秒）" hint="接口限制的最长音频；更长的窗口会切片后拼接">
+              <Field
+                label="单段音频上限（秒）"
+                hint={
+                  isLocal
+                    ? '本地没有接口限制；调小可减少单次占用的显存/内存'
+                    : '接口限制的最长音频；更长的窗口会切片后拼接'
+                }
+              >
                 <Input
                   type="number"
                   min={10}
@@ -327,7 +416,7 @@ export function AsrProviderDialog({
                   ) : (
                     <CheckCircle2 className="h-4 w-4 mr-1" />
                   )}
-                  验证连接
+                  {isLocal ? '测试转写' : '验证连接'}
                 </Button>
                 <Button type="button" onClick={handleSave} disabled={saving}>
                   {saving && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}

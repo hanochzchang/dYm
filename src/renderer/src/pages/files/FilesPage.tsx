@@ -16,7 +16,12 @@ import {
   RefreshCw,
   ShieldAlert,
   AlertTriangle,
-  Wand2
+  Wand2,
+  Music,
+  Link2,
+  Bell,
+  BellOff,
+  Eye
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -74,6 +79,9 @@ interface PostCardProps {
   onToggleSelect: (postId: number) => void
   onRedownload: (post: DbPost) => void
   onDelete: (postId: number) => void
+  onCopyLink: (post: DbPost) => void
+  musicIgnored?: boolean
+  onToggleMusicIgnored?: (post: DbPost) => void
 }
 
 // 卡片单独 memo：勾选 / 翻页 / 打开弹窗时只有受影响的卡片重渲染
@@ -84,7 +92,10 @@ const PostCard = memo(function PostCard({
   onOpen,
   onToggleSelect,
   onRedownload,
-  onDelete
+  onDelete,
+  onCopyLink,
+  musicIgnored,
+  onToggleMusicIgnored
 }: PostCardProps): React.JSX.Element {
   return (
     <ContextMenu>
@@ -146,6 +157,11 @@ const PostCard = memo(function PostCard({
             <div className="absolute top-2 left-2 bg-black/60 text-white text-xs px-2 py-0.5 rounded">
               {isImagePost(post) ? '图集' : '视频'}
             </div>
+            {musicIgnored && (
+              <div className="absolute top-9 left-2 bg-black/60 text-white text-xs px-2 py-0.5 rounded">
+                已忽略
+              </div>
+            )}
             {post.create_time && (
               <div className="absolute bottom-2 right-2 bg-black/60 text-white text-xs px-2 py-0.5 rounded">
                 {formatPostDate(post.create_time)}
@@ -165,11 +181,29 @@ const PostCard = memo(function PostCard({
           <FolderOpen className="h-4 w-4 mr-2" />
           在文件管理器中打开
         </ContextMenuItem>
+        {/* 本地导入的作品在抖音上没有对应页面，没有可复制的链接 */}
+        {!isLocalAwemeId(post.aweme_id) && (
+          <ContextMenuItem onClick={() => onCopyLink(post)}>
+            <Link2 className="h-4 w-4 mr-2" />
+            复制抖音链接
+          </ContextMenuItem>
+        )}
         {/* 导入的本地作品在抖音上不存在，重新下载只会删掉记录却拉不回来 */}
         {!isLocalAwemeId(post.aweme_id) && (
           <ContextMenuItem onClick={() => onRedownload(post)}>
             <RefreshCw className="h-4 w-4 mr-2" />
             重新下载
+          </ContextMenuItem>
+        )}
+        {/* 只在缺音乐列表里提供；普通文件列表不传该回调 */}
+        {onToggleMusicIgnored && (
+          <ContextMenuItem onClick={() => onToggleMusicIgnored(post)}>
+            {musicIgnored ? (
+              <Bell className="h-4 w-4 mr-2" />
+            ) : (
+              <BellOff className="h-4 w-4 mr-2" />
+            )}
+            {musicIgnored ? '恢复音乐提醒' : '标记为抖音已失效'}
           </ContextMenuItem>
         )}
         <ContextMenuItem onClick={() => onDelete(post.id)} className="text-red-600">
@@ -206,6 +240,12 @@ export default function FilesPage() {
   const [scanning, setScanning] = useState(false)
   const [brokenPosts, setBrokenPosts] = useState<BrokenPostInfo[]>([])
   const [showBrokenDialog, setShowBrokenDialog] = useState(false)
+  // 非 null 时内容区切换成「缺音乐图集」全库列表
+  const [missingMusicPosts, setMissingMusicPosts] = useState<DbPost[] | null>(null)
+  const [scanningMusic, setScanningMusic] = useState(false)
+  const [fillingMusic, setFillingMusic] = useState(false)
+  const [fillProgress, setFillProgress] = useState<{ done: number; total: number } | null>(null)
+  const [showIgnoredMusic, setShowIgnoredMusic] = useState(false)
   const [fixingAll, setFixingAll] = useState(false)
   const [fixingTitles, setFixingTitles] = useState(false)
   const [sort, setSort] = useState<PostSortConfig>(() => getInitialSort('files_post_sort'))
@@ -234,6 +274,9 @@ export default function FilesPage() {
 
   useEffect(() => {
     if (selectedUser) {
+      // 切换用户/排序时退出缺音乐列表，回到常规文件浏览
+      setMissingMusicPosts(null)
+      setShowIgnoredMusic(false)
       localStorage.setItem('files_post_sort', JSON.stringify(sort))
       setPosts([])
       setPage(1)
@@ -274,7 +317,8 @@ export default function FilesPage() {
     const alive = (): boolean => mountedRef.current && seq === usersLoadSeq.current
     setLoading(true)
     try {
-      const allUsers = (await window.api.user.getAll()) ?? []
+      // 隐藏作者（show_in_home = 0）不在文件页出现 —— 用户管理页仍能列出他们以便解除隐藏
+      const allUsers = ((await window.api.user.getAll()) ?? []).filter((u) => !!u.show_in_home)
       if (!alive()) return
       // 先把列表亮出来，大小限并发逐个回填，不让最慢的那个用户拖住整页
       setUsers(allUsers)
@@ -304,7 +348,6 @@ export default function FilesPage() {
         .filter((u) => (u.folderCount ?? 0) > 0)
         .sort((a, b) => (b.fileSize ?? 0) - (a.fileSize ?? 0))
       setUsers(sorted)
-      setSelectedUser((cur) => cur ?? sorted[0] ?? null)
     } catch {
       if (alive()) toast.error('加载失败')
     } finally {
@@ -395,6 +438,7 @@ export default function FilesPage() {
       await window.api.files.deletePost(postId)
       toast.success('文件已删除')
       setDeleteConfirm(null)
+      setMissingMusicPosts((prev) => (prev ? prev.filter((p) => p.id !== postId) : prev))
       await reloadCurrentUser()
     } catch {
       toast.error('删除失败')
@@ -413,6 +457,9 @@ export default function FilesPage() {
       }
       toast.success(`已删除 ${deleted} 个文件`)
       setDeleteConfirm(null)
+      setMissingMusicPosts((prev) =>
+        prev ? prev.filter((p) => !selectedIds.has(p.id)) : prev
+      )
       setSelectedIds(new Set())
       await reloadCurrentUser()
     } catch {
@@ -504,6 +551,17 @@ export default function FilesPage() {
     [reloadCurrentUser]
   )
 
+  const handleCopyDouyinLink = useCallback(async (post: DbPost): Promise<void> => {
+    const kind = post.aweme_type === IMAGE_AWEME_TYPE ? 'note' : 'video'
+    const url = `https://www.douyin.com/${kind}/${post.aweme_id}`
+    try {
+      await navigator.clipboard.writeText(url)
+      toast.success('抖音链接已复制')
+    } catch {
+      toast.error('复制失败')
+    }
+  }, [])
+
   const selectAll = () => {
     if (selectedIds.size === posts.length) setSelectedIds(new Set())
     else setSelectedIds(new Set(posts.map((p) => p.id)))
@@ -530,6 +588,87 @@ export default function FilesPage() {
     }
   }
 
+  /** 只扫图集：全库找文件夹里没有音频文件的图集，结果直接以卡片列表展示 */
+  const handleScanMissingMusic = async (): Promise<void> => {
+    setScanningMusic(true)
+    try {
+      const results = await window.api.post.scanMissingMusic()
+      setMissingMusicPosts(results)
+      loadCoverPaths(results)
+      const missingCount = results.filter((p) => !p.music_ignored).length
+      if (results.length === 0) toast.success('所有图集都有音频文件')
+      else if (missingCount === 0) toast.success(`剩余 ${results.length} 个缺音乐作品均已标记忽略`)
+      else toast.success(`发现 ${missingCount} 个缺少音乐的图集`)
+    } catch {
+      toast.error('扫描失败')
+    } finally {
+      setScanningMusic(false)
+    }
+  }
+
+  /** 逐首从抖音补下原声；确实没有原声的作品会留在列表里 */
+  const handleFillMissingMusic = async (): Promise<void> => {
+    if (!missingMusicPosts || fillingMusic) return
+    const targets = missingMusicPosts.filter((p) => !p.music_ignored && !isLocalAwemeId(p.aweme_id))
+    const skippedLocal = missingMusicPosts.filter((p) => isLocalAwemeId(p.aweme_id)).length
+    const skippedIgnored = missingMusicPosts.filter(
+      (p) => p.music_ignored && !isLocalAwemeId(p.aweme_id)
+    ).length
+    setFillingMusic(true)
+    let filled = 0
+    let noMusic = 0
+    let failed = 0
+    try {
+      for (let i = 0; i < targets.length; i++) {
+        if (!mountedRef.current) break
+        setFillProgress({ done: i, total: targets.length })
+        try {
+          const result = await window.api.post.fillMusic(targets[i].aweme_id)
+          if (result.status === 'filled') filled++
+          else if (result.status === 'no-music') noMusic++
+          else failed++
+        } catch {
+          failed++
+        }
+        // 串行请求抖音详情，留一点间隔降低风控概率
+        if (i < targets.length - 1) await new Promise((resolve) => setTimeout(resolve, 300))
+      }
+    } finally {
+      setFillProgress(null)
+      setFillingMusic(false)
+    }
+    if (!mountedRef.current) return
+    const parts = [`成功 ${filled}`, `抖音无原声 ${noMusic}`]
+    if (failed > 0) parts.push(`失败 ${failed}`)
+    if (skippedLocal > 0) parts.push(`跳过本地导入 ${skippedLocal}`)
+    if (skippedIgnored > 0) parts.push(`跳过已忽略 ${skippedIgnored}`)
+    toast.success(`补全完成：${parts.join('，')}`)
+    try {
+      const results = await window.api.post.scanMissingMusic()
+      if (!mountedRef.current) return
+      setMissingMusicPosts(results)
+      loadCoverPaths(results)
+    } catch {
+      /* 刷新失败不影响已补好的文件 */
+    }
+  }
+
+  /** 缺音乐列表里标记/恢复单个作品；只更新该条记录，不重新扫盘 */
+  const handleToggleMusicIgnored = useCallback(async (post: DbPost): Promise<void> => {
+    const ignored = !post.music_ignored
+    try {
+      await window.api.post.setMusicIgnored(post.id, ignored)
+      setMissingMusicPosts(
+        (prev) =>
+          prev?.map((p) => (p.id === post.id ? { ...p, music_ignored: ignored ? 1 : 0 } : p)) ??
+          prev
+      )
+      toast.success(ignored ? '已标记，该作品不再出现在缺音乐列表' : '已恢复音乐提醒')
+    } catch {
+      toast.error('操作失败')
+    }
+  }, [])
+
   const handleFixAllBroken = async () => {
     const fixable = brokenPosts.filter((p) => !isLocalAwemeId(p.awemeId))
     if (fixable.length === 0) return
@@ -551,6 +690,15 @@ export default function FilesPage() {
   // 导入的本地作品没有抖音来源可拉，批量修复时跳过它们
   const fixableBrokenCount = brokenPosts.filter((p) => !isLocalAwemeId(p.awemeId)).length
 
+  const ignoredMusicCount = (missingMusicPosts ?? []).filter((p) => p.music_ignored).length
+  const missingMusicCount = (missingMusicPosts ?? []).filter((p) => !p.music_ignored).length
+  const visibleMusicPosts = (missingMusicPosts ?? []).filter(
+    (p) => showIgnoredMusic || !p.music_ignored
+  )
+  const fillableMusicCount = (missingMusicPosts ?? []).filter(
+    (p) => !p.music_ignored && !isLocalAwemeId(p.aweme_id)
+  ).length
+
   const filteredUsers = (() => {
     if (!userSearch.trim()) return users
     const s = userSearch.toLowerCase()
@@ -569,7 +717,9 @@ export default function FilesPage() {
         }
         actions={
           <>
-            {selectedUser && <SortSelect value={sort} onChange={setSort} />}
+            {selectedUser && missingMusicPosts === null && (
+              <SortSelect value={sort} onChange={setSort} />
+            )}
             <Button variant="outline" size="sm" onClick={handleScanBroken} disabled={scanning}>
               {scanning ? (
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -577,6 +727,20 @@ export default function FilesPage() {
                 <ShieldAlert className="h-4 w-4 mr-2" />
               )}
               {scanning ? '扫描中...' : '扫描损坏文件'}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleScanMissingMusic}
+              disabled={scanningMusic || fillingMusic}
+              title="全库扫描图集，找出文件夹里没有音频文件的作品"
+            >
+              {scanningMusic ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Music className="h-4 w-4 mr-2" />
+              )}
+              {scanningMusic ? '扫描中...' : '缺少音乐'}
             </Button>
             <Button
               variant="outline"
@@ -602,7 +766,7 @@ export default function FilesPage() {
                 删除选中 ({selectedIds.size})
               </Button>
             )}
-            {selectedUser && (
+            {selectedUser && missingMusicPosts === null && (
               <Button
                 variant="outline"
                 size="sm"
@@ -617,7 +781,8 @@ export default function FilesPage() {
         }
       />
 
-      {/* Filter Bar */}
+      {/* Filter Bar：缺音乐扫描是全库视图，不需要选择用户 */}
+      {missingMusicPosts === null && (
       <div className="px-6 py-3 bg-[#F5F5F7] border-b border-[#E5E5E7]">
         <div className="flex items-center gap-3">
           {/* User Selector */}
@@ -704,11 +869,107 @@ export default function FilesPage() {
           )}
         </div>
       </div>
+      )}
 
       {/* Content */}
       <div className="flex-1 overflow-auto px-6 pb-8">
         <div>
-          {loading ? (
+          {missingMusicPosts !== null ? (
+            <div>
+              <div className="flex items-start justify-between gap-4 pt-4">
+                <div>
+                  <h2 className="text-base font-semibold text-[#1D1D1F]">
+                    缺少音乐的图集（{missingMusicCount}）
+                  </h2>
+                  <p className="text-xs text-[#6E6E73] mt-1">
+                    已扫描所有用户。点「立即补全」从抖音拉取原声；抖音已删除/隐藏的作品可右键「标记为抖音已失效」，不再出现在这里。
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {ignoredMusicCount > 0 && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowIgnoredMusic((v) => !v)}
+                    >
+                      <Eye className="h-4 w-4 mr-2" />
+                      {showIgnoredMusic ? '隐藏已忽略' : `查看已忽略（${ignoredMusicCount}）`}
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    onClick={handleFillMissingMusic}
+                    disabled={fillingMusic || scanningMusic || fillableMusicCount === 0}
+                    title="从抖音按 aweme_id 拉取原声，补进作品文件夹"
+                  >
+                    {fillingMusic ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <Music className="h-4 w-4 mr-2" />
+                    )}
+                    {fillingMusic && fillProgress
+                      ? `补全中 ${fillProgress.done + 1}/${fillProgress.total}`
+                      : '立即补全'}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleScanMissingMusic}
+                    disabled={scanningMusic || fillingMusic}
+                  >
+                    {scanningMusic ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-4 w-4 mr-2" />
+                    )}
+                    重新扫描
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setMissingMusicPosts(null)
+                      setShowIgnoredMusic(false)
+                    }}
+                    disabled={fillingMusic}
+                  >
+                    退出
+                  </Button>
+                </div>
+              </div>
+              {visibleMusicPosts.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-20 text-center">
+                  <div className="rounded-full bg-[#F2F2F4] p-6 mb-4">
+                    <Music className="h-12 w-12 text-[#A1A1A6]" />
+                  </div>
+                  <h2 className="text-xl font-semibold text-[#1D1D1F] mb-2">没有缺少音乐的图集</h2>
+                  <p className="text-[#6E6E73]">
+                    {ignoredMusicCount > 0
+                      ? `剩余 ${ignoredMusicCount} 个缺少音乐的作品已标记忽略，可用上方「查看已忽略」恢复`
+                      : '所有已下载图集的文件夹里都有音频文件'}
+                  </p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-5 pt-4">
+                  {visibleMusicPosts.map((post) => (
+                    <PostCard
+                      key={post.id}
+                      post={post}
+                      coverUrl={getCoverUrl(post)}
+                      selected={selectedIds.has(post.id)}
+                      onOpen={handleOpenPost}
+                      onToggleSelect={toggleSelect}
+                      onRedownload={handleRedownloadPost}
+                      onDelete={requestDeletePost}
+                      onCopyLink={handleCopyDouyinLink}
+                      musicIgnored={!!post.music_ignored}
+                      onToggleMusicIgnored={handleToggleMusicIgnored}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : loading ? (
             <div className="flex items-center justify-center py-20">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#0A84FF]" />
             </div>
@@ -751,6 +1012,7 @@ export default function FilesPage() {
                     onToggleSelect={toggleSelect}
                     onRedownload={handleRedownloadPost}
                     onDelete={requestDeletePost}
+                    onCopyLink={handleCopyDouyinLink}
                   />
                 ))}
               </div>
@@ -773,7 +1035,7 @@ export default function FilesPage() {
         post={selectedPost}
         open={viewerOpen}
         onOpenChange={setViewerOpen}
-        allPosts={posts}
+        allPosts={missingMusicPosts ?? posts}
         onSelectPost={setSelectedPost}
       />
 

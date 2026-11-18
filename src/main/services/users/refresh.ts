@@ -1,4 +1,11 @@
-import { getUserById, updateUser, getSetting, type DbUser, type CreateUserInput } from '../../database'
+import {
+  getUserById,
+  updateUser,
+  updatePostsNicknameByUserId,
+  getSetting,
+  type DbUser,
+  type CreateUserInput
+} from '../../database'
 import { fetchUserProfileSmart } from '../douyin/client'
 import { downloadAvatar } from './avatar'
 
@@ -68,6 +75,9 @@ export async function refreshUserProfile(id: number): Promise<RefreshOutcome> {
     total_favorited: fetched.total_favorited,
     aweme_count: fetched.aweme_count
   }
+  // 抖音号也可能被用户修改；只在有值时写，避免降级响应把已有数据覆盖成空
+  if (fetched.unique_id) update.unique_id = fetched.unique_id
+  if (fetched.short_id) update.short_id = fetched.short_id
 
   if (isDegradedProfile(fetched)) {
     // 保留原昵称与头像：不写 nickname / avatar / avatar_path
@@ -86,5 +96,9 @@ export async function refreshUserProfile(id: number): Promise<RefreshOutcome> {
     if (avatarPath) update.avatar_path = avatarPath
   }
   const user = updateUser(id, update)
+  // 作品表冗余存了昵称，用户改名后一起刷新，文件库才不会继续显示旧名
+  if (user && fetched.nickname && fetched.nickname !== existing.nickname) {
+    updatePostsNicknameByUserId(id, fetched.nickname)
+  }
   return { status: 'success', user }
 }

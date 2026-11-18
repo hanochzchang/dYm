@@ -42,11 +42,56 @@ export const LOCKED_NAV_PATH = '/settings'
 /** 存储 key，值是 JSON 数组，如 ["/live","/logs"] */
 export const HIDDEN_NAV_KEY = 'hidden_nav_items'
 
+/** 菜单顺序存储 key，值是 JSON 数组，如 ["/browse","/"]；空数组 = 默认顺序 */
+export const NAV_ORDER_KEY = 'nav_order'
+
 /** 设置页切换后即时刷新侧边栏，不必重启 */
 export const NAV_VISIBILITY_EVENT = 'nav-visibility-change'
 
+/** 设置页调整顺序后即时刷新侧边栏 */
+export const NAV_ORDER_EVENT = 'nav-order-change'
+
 export function emitNavVisibilityChange(hidden: string[]): void {
   window.dispatchEvent(new CustomEvent<string[]>(NAV_VISIBILITY_EVENT, { detail: hidden }))
+}
+
+export function emitNavOrderChange(order: string[]): void {
+  window.dispatchEvent(new CustomEvent<string[]>(NAV_ORDER_EVENT, { detail: order }))
+}
+
+const KNOWN_NAV_PATHS = new Set([...navItems, ...devNavItems].map((item) => item.path))
+
+/** 只保留已知路径并去重，脏数据不会打乱菜单；注意 /settings 只是不可隐藏，顺序仍可调 */
+export function parseNavOrder(raw: string | null | undefined): string[] {
+  if (!raw) return []
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    const seen = new Set<string>()
+    const result: string[] = []
+    for (const x of parsed) {
+      if (typeof x !== 'string' || !KNOWN_NAV_PATHS.has(x) || seen.has(x)) continue
+      seen.add(x)
+      result.push(x)
+    }
+    return result
+  } catch {
+    return []
+  }
+}
+
+/** 按保存的顺序排列；不在顺序里的项（如以后新增的菜单）保持原相对顺序排到末尾 */
+export function sortNavItems(items: NavItem[], order: string[]): NavItem[] {
+  if (order.length === 0) return items
+  const rank = new Map(order.map((path, idx) => [path, idx]))
+  return [...items].sort((a, b) => {
+    const ra = rank.get(a.path)
+    const rb = rank.get(b.path)
+    if (ra === undefined && rb === undefined) return 0
+    if (ra === undefined) return 1
+    if (rb === undefined) return -1
+    return ra - rb
+  })
 }
 
 /** 读盘的值可以是任何东西，逐层兜底；顺手剔除锁定项，避免被脏数据锁在设置页外 */

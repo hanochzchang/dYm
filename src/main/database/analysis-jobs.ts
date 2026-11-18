@@ -1,4 +1,5 @@
 import { getDatabase } from './connection'
+import { VISIBLE_SEC_UIDS } from './visibility'
 import {
   ANALYSIS_DEFAULTS,
   type AnalysisJobItemStatus,
@@ -309,7 +310,11 @@ export function listJobItems(
   const database = getDatabase()
   const page = Math.max(1, filter.page ?? 1)
   const pageSize = Math.max(1, Math.min(500, filter.pageSize ?? 100))
-  const where = filter.status ? 'WHERE i.job_id = ? AND i.status = ?' : 'WHERE i.job_id = ?'
+  // 隐藏作者的作品行不出现。post 行已丢失的孤儿项保留（否则作业计数和详情对不上）。
+  const gate = `AND (p.sec_uid IS NULL OR p.sec_uid IN ${VISIBLE_SEC_UIDS})`
+  const where = filter.status
+    ? `WHERE i.job_id = ? AND i.status = ? ${gate}`
+    : `WHERE i.job_id = ? ${gate}`
   const params: unknown[] = filter.status ? [jobId, filter.status] : [jobId]
   const rows = database
     .prepare(
@@ -327,9 +332,11 @@ export function listJobItems(
     nickname: string | null
   })[]
   const total = (
-    database.prepare(`SELECT COUNT(*) AS c FROM analysis_job_items i ${where}`).get(...params) as {
-      c: number
-    }
+    database
+      .prepare(
+        `SELECT COUNT(*) AS c FROM analysis_job_items i LEFT JOIN posts p ON p.id = i.post_id ${where}`
+      )
+      .get(...params) as { c: number }
   ).c
   return {
     items: rows.map((r) => ({

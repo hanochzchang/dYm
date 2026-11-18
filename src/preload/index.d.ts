@@ -427,6 +427,8 @@ declare global {
     manual_content_level: number | null
     analysis_raw: string | null
     analysis_model: string | null
+    /** 1 = 手动忽略缺音乐提示 */
+    music_ignored: number
   }
 
   interface MediaFiles {
@@ -483,6 +485,14 @@ declare global {
     ) => Promise<MediaFiles | null>
     openFolder: (secUid: string, folderName: string) => Promise<void>
     scanBroken: () => Promise<BrokenPostInfo[]>
+    /** 扫描全库缺少音频文件的图集（仅本地文件判断，不联网） */
+    scanMissingMusic: () => Promise<DbPost[]>
+    /** 按 aweme_id 从抖音拉取原声，补进现有作品文件夹 */
+    fillMusic: (
+      awemeId: string
+    ) => Promise<{ status: 'filled' | 'no-music' | 'failed'; error?: string }>
+    /** 缺音乐列表里手动忽略/恢复某个作品 */
+    setMusicIgnored: (postId: number, ignored: boolean) => Promise<void>
     redownload: (awemeId: string) => Promise<{ success: boolean; message: string }>
     batchRedownload: (awemeIds: string[]) => Promise<{ success: number; failed: number }>
     /** 手动内容等级（1-10）；传 null 清回 AI 分 */
@@ -501,12 +511,15 @@ declare global {
     total: number
     analyzed: number
     unanalyzed: number
+    /** 还没有任何转写结果的作品数 */
+    untranscribed: number
   }
 
   interface TotalAnalysisStats {
     total: number
     analyzed: number
     unanalyzed: number
+    untranscribed: number
   }
 
   interface AiAPI {
@@ -707,6 +720,21 @@ declare global {
     start: (input: LocalImportInput) => Promise<LocalImportResult>
   }
 
+  interface XiaohongshuImportResult {
+    ok: boolean
+    /** true = 库里已有同一份内容，没有重复导入 */
+    skipped?: boolean
+    postId?: number
+    imageCount?: number
+    /** 失败原因（中文，直接展示给用户） */
+    error?: string
+  }
+
+  interface XiaohongshuAPI {
+    /** 传小红书笔记的完整分享文案，解析出图文导入；完成后返回结果对象（不抛异常） */
+    import: (raw: string) => Promise<XiaohongshuImportResult>
+  }
+
   interface SystemResourceInfo {
     cpuUsage: number // 0-100
     memoryUsage: number // 0-100
@@ -777,6 +805,7 @@ declare global {
   }
 
   interface UserDistItem {
+    sec_uid: string
     nickname: string
     count: number
   }
@@ -818,6 +847,7 @@ declare global {
     tag: TagAPI
     video: VideoAPI
     localImport: LocalImportAPI
+    xiaohongshu: XiaohongshuAPI
     system: SystemAPI
     migration: MigrationAPI
     clipboard: ClipboardAPI

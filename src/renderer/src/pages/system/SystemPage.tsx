@@ -12,15 +12,21 @@ import {
   Database,
   X,
   Sparkles,
-  RotateCcw
+  RotateCcw,
+  ArrowUp,
+  ArrowDown
 } from 'lucide-react'
 import { emitDeveloperModeChange } from '@/lib/developer-mode'
 import {
   navItems,
   LOCKED_NAV_PATH,
   HIDDEN_NAV_KEY,
+  NAV_ORDER_KEY,
   parseHiddenNavItems,
-  emitNavVisibilityChange
+  parseNavOrder,
+  sortNavItems,
+  emitNavVisibilityChange,
+  emitNavOrderChange
 } from '@/lib/sidebar-nav'
 
 export default function SystemPage() {
@@ -63,6 +69,8 @@ export default function SystemPage() {
 
   // 侧边栏里被隐藏的菜单路径（默认空，即全部显示）
   const [hiddenNav, setHiddenNav] = useState<string[]>([])
+  // 侧边栏菜单自定义顺序（默认空，即官方顺序）
+  const [navOrder, setNavOrder] = useState<string[]>([])
 
   // 允许脚本执行本地命令（默认关闭）
   const [allowShell, setAllowShell] = useState(false)
@@ -107,6 +115,7 @@ export default function SystemPage() {
       setTelemetryEnabled(settings.telemetry_enabled !== 'false')
       setDeveloperMode(settings.developer_mode === 'true')
       setHiddenNav(parseHiddenNavItems(settings.hidden_nav_items))
+      setNavOrder(parseNavOrder(settings.nav_order))
       setAllowShell(settings.scripts_allow_shell === 'true')
       setSettingsLoaded(true)
     } catch (error) {
@@ -146,6 +155,34 @@ export default function SystemPage() {
       await window.api.settings.set(HIDDEN_NAV_KEY, JSON.stringify(next))
       setHiddenNav(next)
       emitNavVisibilityChange(next)
+    } catch {
+      toast.error('保存失败')
+    }
+  }
+
+  // 上移/下移：按当前完整顺序交换相邻两项，即存即生效
+  const orderedNavItems = sortNavItems(navItems, navOrder)
+
+  const handleMoveNavItem = async (path: string, dir: -1 | 1): Promise<void> => {
+    const paths = orderedNavItems.map((item) => item.path)
+    const idx = paths.indexOf(path)
+    const target = idx + dir
+    if (idx < 0 || target < 0 || target >= paths.length) return
+    ;[paths[idx], paths[target]] = [paths[target], paths[idx]]
+    try {
+      await window.api.settings.set(NAV_ORDER_KEY, JSON.stringify(paths))
+      setNavOrder(paths)
+      emitNavOrderChange(paths)
+    } catch {
+      toast.error('保存失败')
+    }
+  }
+
+  const handleResetNavOrder = async (): Promise<void> => {
+    try {
+      await window.api.settings.set(NAV_ORDER_KEY, '[]')
+      setNavOrder([])
+      emitNavOrderChange([])
     } catch {
       toast.error('保存失败')
     }
@@ -710,11 +747,21 @@ export default function SystemPage() {
         <Section
           eyebrow="界面"
           title="侧边栏菜单"
-          description="关掉的项会从左侧菜单里隐藏；页面和路由都保留着，想恢复随时在这里开回来"
+          description="关掉的项会从左侧菜单里隐藏；页面和路由都保留着，想恢复随时在这里开回来。上下箭头调整顺序，改完即生效并自动保存"
         >
           <div className="bg-white rounded-2xl border border-[#E5E5E7] shadow-sm p-6">
+            <div className="flex justify-end pb-3">
+              <button
+                type="button"
+                disabled={!settingsLoaded}
+                onClick={handleResetNavOrder}
+                className="text-xs text-[#A1A1A6] hover:text-[#0A84FF] transition-colors disabled:opacity-50"
+              >
+                恢复默认顺序
+              </button>
+            </div>
             <div className="divide-y divide-[#E5E5E7]">
-              {navItems.map((item) => {
+              {orderedNavItems.map((item, index) => {
                 const Icon = item.icon
                 const locked = item.path === LOCKED_NAV_PATH
                 const visible = !hiddenNav.includes(item.path)
@@ -734,24 +781,46 @@ export default function SystemPage() {
                         </span>
                       )}
                     </div>
-                    <button
-                      type="button"
-                      disabled={locked || !settingsLoaded}
-                      onClick={() => handleToggleNavItem(item.path)}
-                      className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
-                        locked
-                          ? 'bg-[#E5E5E7] cursor-not-allowed'
-                          : visible
-                            ? 'bg-[#0A84FF]'
-                            : 'bg-[#D1D1D6]'
-                      }`}
-                    >
-                      <span
-                        className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
-                          visible ? 'translate-x-[22px]' : 'translate-x-0.5'
+                    <div className="flex items-center gap-2 self-end md:self-auto">
+                      <div className="flex items-center">
+                        <button
+                          type="button"
+                          disabled={!settingsLoaded || index === 0}
+                          onClick={() => handleMoveNavItem(item.path, -1)}
+                          title="上移"
+                          className="h-7 w-7 flex items-center justify-center rounded-md text-[#6E6E73] hover:bg-[#F2F2F4] transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
+                        >
+                          <ArrowUp className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!settingsLoaded || index === orderedNavItems.length - 1}
+                          onClick={() => handleMoveNavItem(item.path, 1)}
+                          title="下移"
+                          className="h-7 w-7 flex items-center justify-center rounded-md text-[#6E6E73] hover:bg-[#F2F2F4] transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
+                        >
+                          <ArrowDown className="h-4 w-4" />
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={locked || !settingsLoaded}
+                        onClick={() => handleToggleNavItem(item.path)}
+                        className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                          locked
+                            ? 'bg-[#E5E5E7] cursor-not-allowed'
+                            : visible
+                              ? 'bg-[#0A84FF]'
+                              : 'bg-[#D1D1D6]'
                         }`}
-                      />
-                    </button>
+                      >
+                        <span
+                          className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                            visible ? 'translate-x-[22px]' : 'translate-x-0.5'
+                          }`}
+                        />
+                      </button>
+                    </div>
                   </div>
                 )
               })}

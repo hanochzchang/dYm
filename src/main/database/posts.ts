@@ -2,6 +2,7 @@ import { join, sep } from 'path'
 import { existsSync, readFileSync } from 'fs'
 import { getDatabase } from './connection'
 import { replacePostTags, tagKeywordSql, tagMatchSql } from './tags'
+import { VISIBLE_SEC_UIDS, VISIBLE_USERS, visibleSecUidGate } from './visibility'
 
 // Post CRUD
 export interface DbPost {
@@ -35,6 +36,8 @@ export interface DbPost {
   // 模型原始输出（JSON 文本）与所用模型
   analysis_raw: string | null
   analysis_model: string | null
+  // 手动忽略缺音乐提示（1 = 不再出现在缺音乐列表）
+  music_ignored: number
 }
 
 export interface CreatePostInput {
@@ -101,10 +104,12 @@ export function getPostsByUserId(
   const database = getDatabase()
   const offset = (page - 1) * pageSize
   const posts = database
-    .prepare(`SELECT * FROM posts WHERE user_id = ? ${buildOrderBy(sort)} LIMIT ? OFFSET ?`)
+    .prepare(
+      `SELECT * FROM posts WHERE user_id = ? AND sec_uid IN ${VISIBLE_SEC_UIDS} ${buildOrderBy(sort)} LIMIT ? OFFSET ?`
+    )
     .all(userId, pageSize, offset) as DbPost[]
   const row = database
-    .prepare('SELECT COUNT(*) as count FROM posts WHERE user_id = ?')
+    .prepare(`SELECT COUNT(*) as count FROM posts WHERE user_id = ? AND sec_uid IN ${VISIBLE_SEC_UIDS}`)
     .get(userId) as { count: number }
   return { posts, total: row.count }
 }
@@ -112,7 +117,7 @@ export function getPostsByUserId(
 export function getPostCountByUserId(userId: number): number {
   const database = getDatabase()
   const row = database
-    .prepare('SELECT COUNT(*) as count FROM posts WHERE user_id = ?')
+    .prepare(`SELECT COUNT(*) as count FROM posts WHERE user_id = ? AND sec_uid IN ${VISIBLE_SEC_UIDS}`)
     .get(userId) as { count: number }
   return row.count
 }
@@ -251,7 +256,7 @@ function shuffleIds(ids: number[], seed: number): void {
 
 function hasVisibleUsers(): boolean {
   return Boolean(
-    getDatabase().prepare('SELECT 1 AS ok FROM users WHERE show_in_home = 1 LIMIT 1').get()
+    getDatabase().prepare(`SELECT 1 AS ok FROM users WHERE ${VISIBLE_USERS} LIMIT 1`).get()
   )
 }
 
@@ -263,7 +268,7 @@ function listVisibleAuthors(): PostAuthor[] {
     .prepare(
       `SELECT u.sec_uid, u.nickname
        FROM users u
-       WHERE u.show_in_home = 1
+       WHERE ${VISIBLE_USERS}
          AND u.sec_uid != ''
          AND u.nickname IS NOT NULL AND u.nickname != ''
          AND EXISTS (SELECT 1 FROM posts p WHERE p.sec_uid = u.sec_uid)
@@ -276,7 +281,7 @@ function listVisibleAuthors(): PostAuthor[] {
 // 一元 + 让规划器不要用 idx_posts_sec_uid 再全表临时排序，而是沿排序列索引扫到 LIMIT 即停：
 // 3 万条时首页从 ~11ms 降到 <1ms
 function buildPostWhere(filters?: PostFilters): { whereClause: string; params: unknown[] } {
-  const conditions: string[] = [`+sec_uid IN (SELECT sec_uid FROM users WHERE show_in_home = 1)`]
+  const conditions: string[] = [visibleSecUidGate('sec_uid', true)]
   const params: unknown[] = []
 
   if (filters?.secUid) {
@@ -472,43 +477,74 @@ export interface UserAnalysisStats {
   total: number
   analyzed: number
   unanalyzed: number
+  /** 还没有任何转写结果的作品数 */
+  untranscribed: number
 }
 
 export function getUserAnalysisStats(): UserAnalysisStats[] {
   const database = getDatabase()
 
-  // 所有用户一条聚合查询（分析页面不受 show_in_home 限制），避免每用户一次查询
+  // 所有用户一条聚合查询（隐藏作者整行不出现），避免每用户一次查询
   return database
     .prepare(
       `SELECT u.sec_uid, u.nickname,
          COUNT(p.id) as total,
          COALESCE(SUM(CASE WHEN p.analyzed_at IS NOT NULL THEN 1 ELSE 0 END), 0) as analyzed,
-         COALESCE(SUM(CASE WHEN p.id IS NOT NULL AND p.analyzed_at IS NULL THEN 1 ELSE 0 END), 0) as unanalyzed
+         COALESCE(SUM(CASE WHEN p.id IS NOT NULL AND p.analyzed_at IS NULL THEN 1 ELSE 0 END), 0) as unanalyzed,
+         COALESCE(SUM(CASE WHEN p.id IS NOT NULL AND t.post_id IS NULL THEN 1 ELSE 0 END), 0) as untranscribed
        FROM users u
        LEFT JOIN posts p ON p.sec_uid = u.sec_uid
+       LEFT JOIN post_transcripts t ON t.post_id = p.id
+       WHERE ${VISIBLE_USERS}
        GROUP BY u.id
        ORDER BY u.nickname`
     )
     .all() as UserAnalysisStats[]
 }
 
-export function getTotalAnalysisStats(): { total: number; analyzed: number; unanalyzed: number } {
+export function getTotalAnalysisStats(): {
+  total: number
+  analyzed: number
+  unanalyzed: number
+  untranscribed: number
+} {
   const database = getDatabase()
 
-  // 获取所有帖子的分析统计（分析页面不受 show_in_home 限制）
+  // 获取可见作品的分析统计（隐藏作者的作品不计入）
   const stats = database
     .prepare(
       `
       SELECT
         COUNT(*) as total,
-        SUM(CASE WHEN analyzed_at IS NOT NULL THEN 1 ELSE 0 END) as analyzed,
-        SUM(CASE WHEN analyzed_at IS NULL THEN 1 ELSE 0 END) as unanalyzed
-      FROM posts
+        SUM(CASE WHEN p.analyzed_at IS NOT NULL THEN 1 ELSE 0 END) as analyzed,
+        SUM(CASE WHEN p.analyzed_at IS NULL THEN 1 ELSE 0 END) as unanalyzed,
+        SUM(CASE WHEN t.post_id IS NULL THEN 1 ELSE 0 END) as untranscribed
+      FROM posts p LEFT JOIN post_transcripts t ON t.post_id = p.id
+      WHERE ${visibleSecUidGate()}
     `
     )
-    .get() as { total: number; analyzed: number; unanalyzed: number }
+    .get() as { total: number; analyzed: number; unanalyzed: number; untranscribed: number }
 
-  return stats || { total: 0, analyzed: 0, unanalyzed: 0 }
+  return stats || { total: 0, analyzed: 0, unanalyzed: 0, untranscribed: 0 }
+}
+
+/** 还没有转写结果的作品（只转写作业的圈选来源） */
+export function getPostsWithoutTranscript(secUid?: string, limit?: number): DbPost[] {
+  const database = getDatabase()
+  let sql = `SELECT p.* FROM posts p
+    LEFT JOIN post_transcripts t ON t.post_id = p.id
+    WHERE t.post_id IS NULL`
+  const params: unknown[] = []
+  if (secUid) {
+    sql += ' AND p.sec_uid = ?'
+    params.push(secUid)
+  }
+  sql += ' ORDER BY p.downloaded_at DESC'
+  if (limit) {
+    sql += ' LIMIT ?'
+    params.push(limit)
+  }
+  return database.prepare(sql).all(...params) as DbPost[]
 }
 
 export function getUnanalyzedPosts(secUid?: string, limit?: number): DbPost[] {
@@ -656,6 +692,18 @@ export function deletePostByAwemeId(awemeId: string): DbPost | undefined {
   if (!post) return undefined
   database.prepare('DELETE FROM posts WHERE aweme_id = ?').run(awemeId)
   return post
+}
+
+/** 用户改名后同步作品上的冗余昵称 */
+export function updatePostsNicknameByUserId(userId: number, nickname: string): void {
+  getDatabase().prepare('UPDATE posts SET nickname = ? WHERE user_id = ?').run(nickname, userId)
+}
+
+/** 缺音乐列表里手动忽略/恢复某个作品 */
+export function setMusicIgnored(postId: number, ignored: boolean): void {
+  getDatabase()
+    .prepare('UPDATE posts SET music_ignored = ? WHERE id = ?')
+    .run(ignored ? 1 : 0, postId)
 }
 
 export function getPostsByUserIdAll(userId: number): DbPost[] {

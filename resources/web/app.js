@@ -1,3 +1,8 @@
+const SPEED_KEY = 'player_speed'
+const SPEED_MIN = 0.5
+const SPEED_MAX = 3
+const SPEED_STEP = 0.05
+
 const state = {
   tags: [],
   posts: [],
@@ -9,6 +14,8 @@ const state = {
   globalMuted: false,
   autoplayNext: false,
   immersiveAudio: false,
+  /** 全局播放倍速：视频和图文配乐都跟着走，localStorage 记住 */
+  playbackRate: loadStoredSpeed(),
   /** 网格悬停预览的开关，只存内存：刷新回到开（= 现在的行为） */
   hoverPreviewOn: true,
   feedSort: 'create_time',
@@ -64,7 +71,11 @@ const el = {
   sortToggle: document.getElementById('sortToggle'),
   previewToggle: document.getElementById('previewToggle'),
   sortLabel: document.getElementById('sortLabel'),
-  sortMenu: document.getElementById('sortMenu')
+  sortMenu: document.getElementById('sortMenu'),
+  speedPanel: document.getElementById('speedPanel'),
+  speedSlider: document.getElementById('speedSlider'),
+  speedValue: document.getElementById('speedValue'),
+  speedPresets: document.getElementById('speedPresets')
 }
 
 let storyObserver = null
@@ -114,6 +125,42 @@ function formatDate(value) {
   if (!value) return ''
   if (/^\d{8}/.test(value)) return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`
   return value.slice(0, 10)
+}
+
+function clampSpeed(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return 1
+  const stepped = Math.round(n / SPEED_STEP) * SPEED_STEP
+  return Math.min(SPEED_MAX, Math.max(SPEED_MIN, Math.round(stepped * 100) / 100))
+}
+
+function formatSpeed(value) {
+  return `${Number(Number(value).toFixed(2))}×`
+}
+
+function loadStoredSpeed() {
+  try {
+    const raw = Number(localStorage.getItem(SPEED_KEY))
+    return Number.isFinite(raw) && raw > 0 ? clampSpeed(raw) : 1
+  } catch {
+    return 1
+  }
+}
+
+function saveStoredSpeed() {
+  try {
+    localStorage.setItem(SPEED_KEY, String(state.playbackRate))
+  } catch {
+    // localStorage 不可用就只在本次会话生效
+  }
+}
+
+/** 全局倍速应用到所有媒体；长按临时加速的那条先跳过，松手时由 exitSpeed 还原 */
+function applyPlaybackRate(root = el.playerFeed) {
+  root.querySelectorAll('video, audio').forEach((media) => {
+    if (media.dataset.speedBoost === '1') return
+    media.playbackRate = state.playbackRate
+  })
 }
 
 function showToast(msg) {
@@ -166,7 +213,9 @@ function captureBrowseSnapshot() {
     searchValue: el.searchInput.value,
     scrollTop: el.grid.scrollTop,
     author: state.author,
-    authorPage: state.authorPage
+    authorPage: state.authorPage,
+    /** 从播放页点进作者页时，返回要把那一条原样接回来 */
+    playerPostId: state.activePostId
   }
 }
 
@@ -238,11 +287,12 @@ async function enterAuthor(secUid) {
     if (fromPlayer) closePlayer()
     return
   }
-  if (fromPlayer) hidePlayer({ restoreGrid: false })
+  // 先拍快照再藏播放器：快照要记下正在播的那条，hidePlayer 会把它清成 null
   if (!state.loading || state.posts.length > 0) {
     state.browseStack.push(captureBrowseSnapshot())
     if (state.browseStack.length > 8) state.browseStack.shift()
   }
+  if (fromPlayer) hidePlayer({ restoreGrid: false })
   invalidateFeed()
   state.authorPage = true
   state.filters.secUid = secUid
@@ -257,13 +307,33 @@ async function enterAuthor(secUid) {
   }
   renderAuthorPanel()
   loadGrid(true)
-  if (fromPlayer) {
-    // 顶掉播放器那一格：返回一次就回到浏览页，不留一个按了没反应的空档
-    history.replaceState({ view: 'author', secUid }, '')
-    state.historyFlags.author = true
-  } else {
-    pushViewHistory('author', { secUid })
+  // 播放页那格留着压栈：返回一次回到刚才那条，再退一次才回浏览页
+  pushViewHistory('author', { secUid })
+}
+
+/**
+ * 从作者页返回时把刚才的播放页接回来。播放页 DOM 一直没销毁，直接复用就能保住随机顺序、
+ * 当前这条和播放进度；若中途被别的播放页重建过（作者页里又开了播放器），按 id 重新生成。
+ */
+function resumePlayer(postId) {
+  const idx = state.posts.findIndex((p) => p.id === postId)
+  if (idx < 0) return
+  // 历史栈里下一格本来就是播放页，重建时别再压一层
+  state.historyFlags.player = true
+  const story = el.playerFeed.querySelector(`.story[data-post-id="${postId}"]`)
+  if (!story || el.playerFeed.children.length !== state.posts.length) {
+    openPlayer(idx)
+    return
   }
+  stopGridPreview()
+  el.playerView.hidden = false
+  el.playerView.style.display = 'flex'
+  el.browseView.style.display = 'none'
+  state.activePostId = null
+  requestAnimationFrame(() => {
+    story.scrollIntoView({ behavior: 'instant' })
+    void activateStory(story)
+  })
 }
 
 function applyExitAuthor() {
@@ -275,8 +345,10 @@ function applyExitAuthor() {
   state.historyFlags.author = false
   el.authorPanel.hidden = true
   el.authorPanel.innerHTML = ''
-  if (snap) restoreBrowseSnapshot(snap)
-  else {
+  if (snap) {
+    restoreBrowseSnapshot(snap)
+    if (snap.playerPostId != null) resumePlayer(snap.playerPostId)
+  } else {
     state.filters.secUid = ''
     el.grid.scrollTop = 0
     loadGrid(true)
@@ -824,7 +896,8 @@ function storyHtml(post, index, total) {
   const cover = coverUrl(post)
   const safeCover = esc(cover)
   const tags = (post.analysis?.tags || []).slice(0, 3)
-  const desc = truncate(post.desc || post.caption || post.analysis?.summary || '', 80)
+  // 播放器里保留完整文案，超出三行再按需展示「展开」
+  const desc = post.desc || post.caption || post.analysis?.summary || ''
   const date = formatDate(post.createTime)
 
   const imageCount = post.media?.imageUrls?.length || 0
@@ -855,7 +928,12 @@ function storyHtml(post, index, total) {
       ${galleryNav}
       <div class="story-copy">
         <div class="story-author" data-author-uid="${esc(post.author?.secUid || '')}">@${esc(post.author?.nickname || '未知')}</div>
-        ${desc ? `<p class="story-title">${esc(desc)}</p>` : ''}
+        ${
+          desc
+            ? `<p class="story-title js-story-title">${esc(desc)}</p>
+        <button class="story-expand" type="button" data-story-expand hidden>展开</button>`
+            : ''
+        }
         <div class="story-tags">
           ${date ? `<span class="story-tag">${esc(date)}</span>` : ''}
           ${tags.map((t) => `<span class="story-tag">#${esc(t)}</span>`).join('')}
@@ -875,8 +953,31 @@ function storyHtml(post, index, total) {
         </button>`
             : ''
         }
+        <button class="rail-button rail-button-speed${state.playbackRate !== 1 ? ' is-active' : ''}" type="button" data-action="speed" aria-label="播放速度">
+          <span class="js-speed-label rail-speed-label">${formatSpeed(state.playbackRate)}</span>
+        </button>
       </aside>
     </article>`
+}
+
+/** 文案溢出三行才显示「展开」；已经展开的卡片固定显示「收起」 */
+function syncStoryExpand(story) {
+  const title = story.querySelector('.js-story-title')
+  const btn = story.querySelector('[data-story-expand]')
+  if (!title || !btn) return
+  if (story.dataset.descExpanded === '1') {
+    btn.hidden = false
+    btn.textContent = '收起'
+    return
+  }
+  title.classList.remove('is-expanded')
+  btn.textContent = '展开'
+  btn.hidden = title.scrollHeight <= title.clientHeight + 1
+}
+
+function syncStoryExpandAll() {
+  if (!isPlayerOpen()) return
+  el.playerFeed.querySelectorAll('.story').forEach(syncStoryExpand)
 }
 
 function mountStoryMedia(story) {
@@ -888,6 +989,7 @@ function mountStoryMedia(story) {
   if (!post) return
   layer.innerHTML = mediaInnerHtml(post)
   story.dataset.mediaMounted = '1'
+  applyPlaybackRate(layer)
 
   if (story.dataset.type === 'images') {
     const idx = Number(story.dataset.imageIndex || 0)
@@ -959,11 +1061,14 @@ function clearImageEndTimer() {
   }
 }
 
-/** 沉浸模式要让音乐循环到一轮结束；默认模式的单图帖反过来要停掉 loop —— 否则翻页被拖住时音乐会重头再来一遍 */
+/**
+ * 默认模式（连播关）要让音乐跟视频一样一直循环，别放完一遍就静音；
+ * 但开了连播的单图帖反过来要停掉 loop —— 否则翻页被拖住时音乐会重头再来一遍。
+ */
 function syncAudioLoop(story) {
   const audio = story.querySelector('.js-story-audio')
   if (!audio) return
-  audio.loop = state.immersiveAudio || Number(story.dataset.imageCount || 0) > 1
+  audio.loop = state.immersiveAudio || !state.autoplayNext || Number(story.dataset.imageCount || 0) > 1
 }
 
 /**
@@ -1081,6 +1186,7 @@ async function activateStory(story) {
 
   const video = story.querySelector('.js-story-video')
   const audio = story.querySelector('.js-story-audio')
+  applyPlaybackRate(story)
 
   if (video) {
     video.muted = state.globalMuted
@@ -1124,6 +1230,36 @@ function syncMute() {
   })
 }
 
+function syncSpeed() {
+  el.playerFeed.querySelectorAll('[data-action="speed"]').forEach((btn) => {
+    btn.classList.toggle('is-active', state.playbackRate !== 1)
+    const label = btn.querySelector('.js-speed-label')
+    if (label) label.textContent = formatSpeed(state.playbackRate)
+  })
+  el.speedSlider.value = String(state.playbackRate)
+  el.speedValue.textContent = formatSpeed(state.playbackRate)
+  el.speedPresets.querySelectorAll('[data-speed]').forEach((chip) => {
+    chip.classList.toggle('is-active', Number(chip.dataset.speed) === state.playbackRate)
+  })
+  applyPlaybackRate()
+}
+
+function setPlaybackRate(value) {
+  const next = clampSpeed(value)
+  if (next === state.playbackRate) return
+  state.playbackRate = next
+  saveStoredSpeed()
+  syncSpeed()
+}
+
+function closeSpeedPanel() {
+  el.speedPanel.hidden = true
+}
+
+function toggleSpeedPanel() {
+  el.speedPanel.hidden = !el.speedPanel.hidden
+}
+
 /**
  * 连播和沉浸听歌在视频上的标准是同一个：播完就翻下一条 —— 所以两者任意一个开着，
  * 视频都不能再 loop，否则 ended 永远不来，等于把它卡在原地。
@@ -1135,12 +1271,15 @@ function syncVideoLoop(video) {
 /**
  * 连播开关只有一个全局状态，但每条 story 各渲染了一个按钮，且媒体元素会被
  * MEDIA_WINDOW 动态挂载/卸载 —— 所以切开关时既要点亮所有按钮，
- * 也要同步已经挂载出来的 video.loop（新挂载的由 mountStoryMedia 负责）。
+ * 也要同步已经挂载出来的 audio.loop / video.loop（新挂载的由 mountStoryMedia 负责）。
  */
 function syncAutoplay() {
   el.playerFeed.querySelectorAll('[data-action="autoplay"]').forEach((btn) => {
     btn.classList.toggle('is-active', state.autoplayNext)
     btn.setAttribute('aria-pressed', String(state.autoplayNext))
+  })
+  el.playerFeed.querySelectorAll('.story[data-type="images"]').forEach((story) => {
+    syncAudioLoop(story)
   })
   el.playerFeed.querySelectorAll('.js-story-video').forEach((video) => {
     syncVideoLoop(video)
@@ -1210,6 +1349,7 @@ function updateImageStory(story, nextIndex) {
     if (img.tagName === 'VIDEO') {
       if (active) {
         img.currentTime = 0
+        img.playbackRate = state.playbackRate
         img.play().catch(() => {})
       } else {
         img.pause()
@@ -1311,6 +1451,29 @@ function bindStories() {
       state.immersiveAudio = !state.immersiveAudio
       syncImmersive()
       showToast(state.immersiveAudio ? '沉浸听歌已开启' : '沉浸听歌已关闭')
+    })
+
+    story.querySelector('[data-action="speed"]')?.addEventListener('click', (event) => {
+      event.stopPropagation()
+      el.speedSlider.value = String(state.playbackRate)
+      toggleSpeedPanel()
+    })
+
+    story.querySelector('[data-story-expand]')?.addEventListener('click', (event) => {
+      event.stopPropagation()
+      const title = story.querySelector('.js-story-title')
+      if (!title) return
+      const btn = event.currentTarget
+      if (story.dataset.descExpanded === '1') {
+        delete story.dataset.descExpanded
+        title.classList.remove('is-expanded')
+        btn.textContent = '展开'
+        btn.hidden = title.scrollHeight <= title.clientHeight + 1
+      } else {
+        story.dataset.descExpanded = '1'
+        title.classList.add('is-expanded')
+        btn.textContent = '收起'
+      }
     })
 
     const authorEl = story.querySelector('.story-author[data-author-uid]')
@@ -1449,16 +1612,20 @@ function bindVideoControls(story, video) {
   let startY = 0
   let speedBadge = null
 
-  const showSpeedBadge = () => {
+  const showSpeedBadge = (rate) => {
     if (!speedBadge) {
       speedBadge = document.createElement('div')
       speedBadge.className = 'story-speed-badge'
       const icon = document.createElement('span')
       icon.className = 'story-speed-badge-icon'
       icon.textContent = '▶▶'
-      speedBadge.append(icon, '2倍速播放中')
+      const text = document.createElement('span')
+      text.className = 'js-speed-badge-text'
+      speedBadge.append(icon, text)
       story.appendChild(speedBadge)
     }
+    const text = speedBadge.querySelector('.js-speed-badge-text')
+    if (text) text.textContent = `${Number(Number(rate).toFixed(2))}倍速播放中`
     void speedBadge.offsetWidth
     speedBadge.classList.add('is-visible')
   }
@@ -1467,9 +1634,12 @@ function bindVideoControls(story, video) {
     holdTimer = null
     if (speedActive) return
     speedActive = true
-    video.playbackRate = 2
+    // 全局倍速已经高于 2× 时，长按不降速，维持当前倍率
+    const boost = Math.max(2, state.playbackRate)
+    video.playbackRate = boost
+    video.dataset.speedBoost = '1'
     if (video.paused) video.play().catch(() => {})
-    showSpeedBadge()
+    showSpeedBadge(boost)
   }
 
   const exitSpeed = () => {
@@ -1479,7 +1649,8 @@ function bindVideoControls(story, video) {
     }
     if (!speedActive) return
     speedActive = false
-    video.playbackRate = 1
+    delete video.dataset.speedBoost
+    video.playbackRate = state.playbackRate
     speedBadge?.classList.remove('is-visible')
     speedEndedAt = Date.now() // 松手随后触发的 click 在此后短时间内被忽略，避免误暂停
   }
@@ -1514,6 +1685,10 @@ function bindVideoControls(story, video) {
   video.addEventListener('contextmenu', (event) => event.preventDefault())
 
   video.addEventListener('click', async () => {
+    if (!el.speedPanel.hidden) {
+      closeSpeedPanel()
+      return
+    }
     if (Date.now() - speedEndedAt < 300) return // 忽略长按松手后误触的暂停
     if (video.paused) {
       try {
@@ -1545,6 +1720,8 @@ function openPlayer(startIndex) {
 
   // Scroll to the selected story
   requestAnimationFrame(() => {
+    // 播放器显示后才能量出文案高度，刷新「展开」按钮
+    syncStoryExpandAll()
     const target = el.playerFeed.querySelectorAll('.story')[startIndex]
     if (target) {
       target.scrollIntoView({ behavior: 'instant' })
@@ -1566,6 +1743,7 @@ function extendPlayer(newPosts) {
   fragment.innerHTML = newPosts.map((p, i) => storyHtml(p, startIndex + i, total)).join('')
   while (fragment.firstElementChild) el.playerFeed.appendChild(fragment.firstElementChild)
   bindStories()
+  requestAnimationFrame(syncStoryExpandAll)
 }
 
 function maybeLoadMoreForPlayer(activeId) {
@@ -1582,6 +1760,7 @@ function hidePlayer({ restoreGrid = true } = {}) {
   }
   hideAuthorModal()
   pauseAll()
+  closeSpeedPanel()
   const lastId = state.activePostId
   state.activePostId = null
   state.imageManualOverride.clear()
@@ -1714,6 +1893,8 @@ document.addEventListener('keyup', (event) => {
 })
 // 长按期间切走标签页收不到 keyup，不兜底会一直卡在倍速上
 window.addEventListener('blur', () => releaseKeyHold(false))
+// 换行数随宽度变，重新判断哪些文案还需要「展开」
+window.addEventListener('resize', syncStoryExpandAll)
 
 window.addEventListener('popstate', () => {
   if (skipPops > 0) {
@@ -1740,6 +1921,11 @@ document.addEventListener('keydown', (event) => {
     return
   }
   if (!isPlayerOpen()) return
+  if (event.key === 'Escape' && !el.speedPanel.hidden) {
+    event.preventDefault()
+    closeSpeedPanel()
+    return
+  }
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)
     return
 
@@ -1869,11 +2055,32 @@ document.addEventListener('keydown', (event) => {
 })
 el.grid.addEventListener('scroll', closeSortMenu)
 
+// 倍速面板：预设、滑杆、恢复 1×；点面板外收起
+el.speedSlider.addEventListener('input', () => setPlaybackRate(Number(el.speedSlider.value)))
+
+el.speedPresets.addEventListener('click', (event) => {
+  const chip = event.target.closest('[data-speed]')
+  if (!chip) return
+  setPlaybackRate(Number(chip.dataset.speed))
+})
+
+el.speedPanel.querySelector('.js-speed-reset')?.addEventListener('click', () => {
+  setPlaybackRate(1)
+})
+
+document.addEventListener('click', (event) => {
+  if (el.speedPanel.hidden) return
+  if (event.target.closest('[data-action="speed"]')) return
+  if (el.speedPanel.contains(event.target)) return
+  closeSpeedPanel()
+})
+
 // ── Bootstrap ──
 
 async function bootstrap() {
   el.gridLoading.style.display = 'flex'
   syncSortToggle()
+  syncSpeed()
   try {
     const [, tags] = await Promise.all([fetchJson('/api/info'), fetchJson('/api/tags')])
     state.tags = tags.tags || []

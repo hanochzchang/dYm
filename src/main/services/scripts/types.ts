@@ -156,7 +156,7 @@ export interface ScriptRunResult {
 /** 数据库行的通用形状 */
 export type Row = Record<string, unknown>
 
-/** 可更新的用户设置字段 */
+/** 可更新的用户设置字段。show_in_home = false 表示隐藏该作者的作品（界面各处都不显示） */
 export interface UserSettingsPatch {
   show_in_home?: boolean
   max_download_count?: number

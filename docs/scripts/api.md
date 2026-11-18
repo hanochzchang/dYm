@@ -98,7 +98,7 @@ api.db.users.delete(id: number): { sec_uid: string } | undefined
 
 | 字段                 | 类型    | 说明                           |
 | -------------------- | ------- | ------------------------------ |
-| `show_in_home`       | boolean | 是否在首页显示                 |
+| `show_in_home`       | boolean | 是否隐藏该作者的作品（false = 隐藏，界面各处都不显示） |
 | `max_download_count` | number  | 用户级下载上限，0 = 用全局设置 |
 | `remark`             | string  | 备注                           |
 | `auto_sync`          | boolean | 是否自动同步                   |

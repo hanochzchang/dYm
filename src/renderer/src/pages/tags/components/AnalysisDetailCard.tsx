@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ChevronDown, ChevronRight, FileText, ListVideo, Star, Info, Pencil } from 'lucide-react'
-import type { PostAnalysisDetail, VideoAnalysis } from '@shared/analysis'
+import type { PostAnalysisDetail, PostTranscript, VideoAnalysis } from '@shared/analysis'
 import { cn } from '@/lib/utils'
 import { SetContentLevelDialog } from '../SetContentLevelDialog'
 import { EditAnalysisDialog } from '../EditAnalysisDialog'
@@ -44,7 +44,7 @@ function nonEmpty(list: string[] | undefined): string[] {
 
 /**
  * 作品编辑页里的「AI 理解」卡片：总结、分类、评分、章节、字幕。
- * 只在 v2 结构化结果存在时渲染；旧版只有标签的作品显示为空态。
+ * 没有结构化结果时：旧版作品退回一句总结；只跑过转写的作品单独显示口播文稿。
  */
 export function AnalysisDetailCard({
   postId,
@@ -59,7 +59,6 @@ export function AnalysisDetailCard({
   const [result, setResult] = useState<{ key: string; detail: PostAnalysisDetail | null } | null>(
     null
   )
-  const [transcriptOpen, setTranscriptOpen] = useState(false)
   const [levelOpen, setLevelOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
 
@@ -83,15 +82,34 @@ export function AnalysisDetailCard({
   const detail = result.detail
   const analysis = detail?.analysis
   if (!analysis) {
-    if (!fallbackSummary?.trim()) return null
+    const transcript = detail?.transcript ?? null
+    const hasTranscript = !!transcript?.text.trim()
+    const hasSummary = !!fallbackSummary?.trim()
+    if (!hasSummary && !hasTranscript) return null
     return (
-      <div className="rounded-xl border border-[#E5E5E7] bg-white p-5 space-y-2">
-        <div className="flex items-center gap-2">
-          <FileText className="h-4 w-4 text-[#0A84FF]" />
-          <span className="text-sm font-medium text-[#1D1D1F]">AI 理解</span>
-          <span className="text-[11px] text-[#A1A1A6]">旧版结果 · 重新分析可获得章节与字幕</span>
-        </div>
-        <p className="text-sm text-[#1D1D1F] leading-relaxed">{fallbackSummary}</p>
+      <div className="space-y-4">
+        {hasSummary && (
+          <div className="rounded-xl border border-[#E5E5E7] bg-white p-5 space-y-2">
+            <div className="flex items-center gap-2">
+              <FileText className="h-4 w-4 text-[#0A84FF]" />
+              <span className="text-sm font-medium text-[#1D1D1F]">AI 理解</span>
+              <span className="text-[11px] text-[#A1A1A6]">
+                旧版结果 · 重新分析可获得章节与字幕
+              </span>
+            </div>
+            <p className="text-sm text-[#1D1D1F] leading-relaxed">{fallbackSummary}</p>
+          </div>
+        )}
+        {transcript && hasTranscript && (
+          <div className="rounded-xl border border-[#E5E5E7] bg-white p-5 space-y-2">
+            <div className="flex items-center gap-2">
+              <FileText className="h-4 w-4 text-[#0A84FF]" />
+              <span className="text-sm font-medium text-[#1D1D1F]">口播文稿</span>
+              <span className="text-[11px] text-[#A1A1A6]">语音转写 · 尚未进行 AI 分析</span>
+            </div>
+            <TranscriptSection transcript={transcript} defaultOpen />
+          </div>
+        )}
       </div>
     )
   }
@@ -170,43 +188,7 @@ export function AnalysisDetailCard({
       )}
 
       {detail?.transcript && detail.transcript.text.trim() && (
-        <div className="space-y-2">
-          <button
-            type="button"
-            onClick={() => setTranscriptOpen((v) => !v)}
-            className="flex items-center gap-1.5 text-xs font-medium text-[#6E6E73] hover:text-[#1D1D1F] transition-colors"
-          >
-            {transcriptOpen ? (
-              <ChevronDown className="h-3.5 w-3.5" />
-            ) : (
-              <ChevronRight className="h-3.5 w-3.5" />
-            )}
-            字幕
-            <span className="text-[#A1A1A6] font-normal">
-              {detail.transcript.segments.length} 段
-              {detail.transcript.language ? ` · ${detail.transcript.language}` : ''}
-              {detail.transcript.partial ? ' · 只转写了抽样片段' : ''}
-            </span>
-          </button>
-          {transcriptOpen && (
-            <div className="max-h-72 overflow-y-auto rounded-lg bg-[#F5F5F7] p-3 space-y-1">
-              {detail.transcript.segments.length > 0 ? (
-                detail.transcript.segments.map((seg, i) => (
-                  <div key={i} className="flex gap-3 text-xs leading-relaxed">
-                    <span className="shrink-0 w-12 font-mono text-[#A1A1A6] tabular-nums">
-                      {fmtTime(seg.start)}
-                    </span>
-                    <span className="text-[#1D1D1F]">{seg.text}</span>
-                  </div>
-                ))
-              ) : (
-                <p className="text-xs text-[#1D1D1F] leading-relaxed whitespace-pre-wrap">
-                  {detail.transcript.text}
-                </p>
-              )}
-            </div>
-          )}
-        </div>
+        <TranscriptSection transcript={detail.transcript} />
       )}
 
       {/* Dialog 走 portal，挂在树里哪都行，放这儿省得再包一层 */}
@@ -226,6 +208,51 @@ export function AnalysisDetailCard({
         manual={detail.manual}
         onSaved={onAnalysisChange}
       />
+    </div>
+  )
+}
+
+function TranscriptSection({
+  transcript,
+  defaultOpen = false
+}: {
+  transcript: PostTranscript
+  defaultOpen?: boolean
+}): React.JSX.Element {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <div className="space-y-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1.5 text-xs font-medium text-[#6E6E73] hover:text-[#1D1D1F] transition-colors"
+      >
+        {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+        字幕
+        <span className="text-[#A1A1A6] font-normal">
+          {transcript.segments.length} 段
+          {transcript.language ? ` · ${transcript.language}` : ''}
+          {transcript.partial ? ' · 只转写了抽样片段' : ''}
+        </span>
+      </button>
+      {open && (
+        <div className="max-h-72 overflow-y-auto rounded-lg bg-[#F5F5F7] p-3 space-y-1">
+          {transcript.segments.length > 0 ? (
+            transcript.segments.map((seg, i) => (
+              <div key={i} className="flex gap-3 text-xs leading-relaxed">
+                <span className="shrink-0 w-12 font-mono text-[#A1A1A6] tabular-nums">
+                  {fmtTime(seg.start)}
+                </span>
+                <span className="text-[#1D1D1F]">{seg.text}</span>
+              </div>
+            ))
+          ) : (
+            <p className="text-xs text-[#1D1D1F] leading-relaxed whitespace-pre-wrap">
+              {transcript.text}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   )
 }

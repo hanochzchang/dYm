@@ -140,6 +140,8 @@ export function initDatabase(): void {
   ensureColumn(database, 'posts', 'width', 'INTEGER')
   ensureColumn(database, 'posts', 'height', 'INTEGER')
   ensureColumn(database, 'posts', 'has_audio', 'INTEGER')
+  // 缺音乐扫描里手动忽略的作品（抖音已删除/隐藏等），不再提示补全
+  ensureColumn(database, 'posts', 'music_ignored', 'INTEGER DEFAULT 0')
 
   // posts 表索引
   database.exec(`CREATE INDEX IF NOT EXISTS idx_posts_user_id ON posts(user_id)`)

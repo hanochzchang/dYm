@@ -10,7 +10,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>dYm Feed</title>
-    <link rel="stylesheet" href="/app.css?v=16" />
+    <link rel="stylesheet" href="/app.css?v=20" />
   </head>
   <body>
     <div class="ambient" aria-hidden="true">
@@ -79,12 +79,30 @@
         <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="m14.7 6.3-1.4-1.4L6.2 12l7.1 7.1 1.4-1.4L9 12l5.7-5.7Z"/></svg>
       </button>
       <div id="playerFeed" class="player-feed"></div>
+      <div id="speedPanel" class="speed-panel" hidden>
+        <div class="speed-panel-head">
+          <span>播放速度</span>
+          <b id="speedValue">1×</b>
+        </div>
+        <div id="speedPresets" class="speed-presets">
+          <button class="speed-chip" type="button" data-speed="0.5">0.5×</button>
+          <button class="speed-chip" type="button" data-speed="0.75">0.75×</button>
+          <button class="speed-chip" type="button" data-speed="1">1×</button>
+          <button class="speed-chip" type="button" data-speed="1.25">1.25×</button>
+          <button class="speed-chip" type="button" data-speed="1.5">1.5×</button>
+          <button class="speed-chip" type="button" data-speed="2">2×</button>
+          <button class="speed-chip" type="button" data-speed="2.5">2.5×</button>
+          <button class="speed-chip" type="button" data-speed="3">3×</button>
+        </div>
+        <input id="speedSlider" class="speed-slider" type="range" min="0.5" max="3" step="0.05" value="1" aria-label="播放速度" />
+        <button class="speed-reset js-speed-reset" type="button">恢复 1×</button>
+      </div>
     </div>
 
     <div id="authorModal" class="author-modal" hidden></div>
 
     <div id="toast" class="glass toast" role="status" aria-live="polite"></div>
 
-    <script type="module" src="/app.js?v=16"></script>
+    <script type="module" src="/app.js?v=18"></script>
   </body>
 </html>

@@ -1,7 +1,7 @@
 import { Page } from '@/components/layout/Page'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { useState, useEffect, useMemo, useRef, useCallback, memo } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import {
   Video,
@@ -14,12 +14,17 @@ import {
   Search,
   ChevronDown,
   ChevronUp,
-  RefreshCw,
+  Eye,
+  EyeOff,
   Star,
   TagIcon,
   Tags,
   UserSearch,
-  Upload
+  Upload,
+  Link2,
+  Loader2,
+  Captions,
+  Trash2
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -32,10 +37,19 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { MediaViewer } from '@/components/media/MediaViewer'
+import { AuthorPostsDialog, type AuthorSummary } from '@/components/media/AuthorPostsDialog'
 import { LocalImportDialog } from '@/components/media/LocalImportDialog'
+import { XiaohongshuImportDialog } from '@/components/media/XiaohongshuImportDialog'
 import { SortSelect } from '@/components/common/SortSelect'
-import { isLocalAwemeId } from '@shared/local-post'
 import { getInitialSort } from '@/lib/post-sort'
 import { getMergedTags } from '@/lib/utils'
 import { AddTagsDialog } from '@/pages/tags/AddTagsDialog'
@@ -73,35 +87,33 @@ function listKeyWithoutSecUid(filters: PostFilters, sort: PostSortConfig): strin
 interface PostCardProps {
   post: DbPost
   coverUrl: string | null
+  /** 关掉后不渲染标签和内容等级，卡片高度更整齐 */
+  showMeta: boolean
   onOpen: (post: DbPost) => void
   onAuthorClick: (secUid: string) => void
   onAddTags: (post: DbPost) => void
+  onTranscribe: (post: DbPost) => void
   onSetLevel: (post: DbPost) => void
   onEditTags: (postId: number) => void
   onAuthorTags: (secUid: string) => void
+  onDelete: (post: DbPost) => void
 }
 
 // 卡片单独 memo：滚动加载 / 打开弹窗等父级状态变化时，未变的卡片不重渲染
 const PostCard = memo(function PostCard({
   post,
   coverUrl,
+  showMeta,
   onOpen,
   onAuthorClick,
   onAddTags,
+  onTranscribe,
   onSetLevel,
   onEditTags,
-  onAuthorTags
+  onAuthorTags,
+  onDelete
 }: PostCardProps): React.JSX.Element {
   const tags = useMemo(() => getMergedTags(post), [post])
-
-  const handleRedownload = async (): Promise<void> => {
-    try {
-      await window.api.post.redownload(post.aweme_id)
-      toast.success('已标记重新下载，下次同步时将重新下载此作品')
-    } catch (e) {
-      toast.error('重新下载标记失败: ' + (e as Error).message)
-    }
-  }
 
   return (
     <ContextMenu>
@@ -161,7 +173,7 @@ const PostCard = memo(function PostCard({
             >
               @{post.nickname}
             </button>
-            {tags.length > 0 && (
+            {showMeta && tags.length > 0 && (
               <div className="flex flex-wrap gap-1 mt-2">
                 {tags.slice(0, 3).map((tag) => (
                   <Badge
@@ -182,12 +194,14 @@ const PostCard = memo(function PostCard({
                 )}
               </div>
             )}
-            {post.analysis_content_level !== null && post.analysis_content_level > 0 && (
-              <div className="flex items-center gap-1 mt-1.5">
-                <Flame className="h-3 w-3 text-orange-500" />
-                <span className="text-xs text-orange-500">{post.analysis_content_level}</span>
-              </div>
-            )}
+            {showMeta &&
+              post.analysis_content_level !== null &&
+              post.analysis_content_level > 0 && (
+                <div className="flex items-center gap-1 mt-1.5">
+                  <Flame className="h-3 w-3 text-orange-500" />
+                  <span className="text-xs text-orange-500">{post.analysis_content_level}</span>
+                </div>
+              )}
           </div>
         </Card>
       </ContextMenuTrigger>
@@ -195,6 +209,10 @@ const PostCard = memo(function PostCard({
         <ContextMenuItem onClick={() => onAddTags(post)}>
           <TagIcon className="h-4 w-4 mr-2" />
           添加标签
+        </ContextMenuItem>
+        <ContextMenuItem onClick={() => onTranscribe(post)}>
+          <Captions className="h-4 w-4 mr-2" />
+          转写文本
         </ContextMenuItem>
         <ContextMenuItem onClick={() => onSetLevel(post)}>
           <Star className="h-4 w-4 mr-2" />
@@ -213,13 +231,13 @@ const PostCard = memo(function PostCard({
           <FolderOpen className="h-4 w-4 mr-2" />
           在文件管理器中打开
         </ContextMenuItem>
-        {/* 导入的本地作品在抖音上不存在，重新下载只会删掉记录却拉不回来 */}
-        {!isLocalAwemeId(post.aweme_id) && (
-          <ContextMenuItem onClick={handleRedownload}>
-            <RefreshCw className="h-4 w-4 mr-2" />
-            重新下载
-          </ContextMenuItem>
-        )}
+        <ContextMenuItem
+          onClick={() => onDelete(post)}
+          className="text-red-600 focus:text-red-600"
+        >
+          <Trash2 className="h-4 w-4 mr-2" />
+          删除作品
+        </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
   )
@@ -227,9 +245,13 @@ const PostCard = memo(function PostCard({
 
 export default function BrowsePage() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   // 右键「添加标签」的目标作品（null 表示弹窗关闭）
   const [tagTarget, setTagTarget] = useState<DbPost | null>(null)
   const [levelTarget, setLevelTarget] = useState<DbPost | null>(null)
+  // 右键「删除作品」的目标作品（null 表示弹窗关闭）
+  const [deleteTarget, setDeleteTarget] = useState<DbPost | null>(null)
+  const [deleteLoading, setDeleteLoading] = useState(false)
   const [posts, setPosts] = useState<DbPost[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -239,8 +261,13 @@ export default function BrowsePage() {
   const [coverPaths, setCoverPaths] = useState<Record<string, string>>({})
   const [selectedPost, setSelectedPost] = useState<DbPost | null>(null)
   const [viewerOpen, setViewerOpen] = useState(false)
+  // 播放框里点作者名弹出的作者作品弹窗
+  const [authorDialog, setAuthorDialog] = useState<AuthorSummary | null>(null)
   const [authors, setAuthors] = useState<PostAuthor[]>([])
-  const [selectedSecUid, setSelectedSecUid] = useState<string>('')
+  // 用户管理页点头像/昵称跳过来时带 ?user=<secUid>，用它做初始筛选
+  const [selectedSecUid, setSelectedSecUid] = useState<string>(
+    () => searchParams.get('user') || ''
+  )
   const [allTags, setAllTags] = useState<string[]>([])
   const [selectedTags, setSelectedTags] = useState<string[]>([])
   const [sexyLevelRange, setSexyLevelRange] = useState<[number, number]>([0, 10])
@@ -249,12 +276,17 @@ export default function BrowsePage() {
   const [showAllTags, setShowAllTags] = useState(false)
   const [tagSearch, setTagSearch] = useState('')
   const [localImportOpen, setLocalImportOpen] = useState(false)
+  const [xhsImportOpen, setXhsImportOpen] = useState(false)
   const [searchKeyword, setSearchKeyword] = useState('')
   // 搜索词防抖后的副本：filters 只跟它走，避免每敲一个字就打一次全库 LIKE 查询
   const [debouncedKeyword, setDebouncedKeyword] = useState('')
   const [showAuthorDropdown, setShowAuthorDropdown] = useState(false)
   const [authorSearch, setAuthorSearch] = useState('')
   const [sort, setSort] = useState<PostSortConfig>(() => getInitialSort('home_post_sort'))
+  // 卡片是否显示标签与内容等级：纯视图偏好，跟排序一样存 localStorage
+  const [showMeta, setShowMeta] = useState<boolean>(
+    () => localStorage.getItem('home_show_meta') !== 'false'
+  )
   const sentinelRef = useRef<HTMLDivElement>(null)
   const gridScrollRef = useRef<HTMLDivElement>(null)
   const authorDropdownRef = useRef<HTMLDivElement>(null)
@@ -271,6 +303,17 @@ export default function BrowsePage() {
     const timer = setTimeout(() => setDebouncedKeyword(searchKeyword.trim()), 300)
     return () => clearTimeout(timer)
   }, [searchKeyword])
+
+  // ?user= 只用于挂载时那一次初始筛选，读完就从 URL 上抹掉，
+  // 免得用户清掉作者筛选后刷新页面又跳回该作者
+  useEffect(() => {
+    if (!searchParams.get('user')) return
+    const next = new URLSearchParams(searchParams)
+    next.delete('user')
+    setSearchParams(next, { replace: true })
+    // 只在挂载时执行一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const filters = useMemo<PostFilters>(
     () => ({
@@ -290,6 +333,10 @@ export default function BrowsePage() {
   useEffect(() => {
     listStateRef.current = { posts, page, total, hasMore, filters, sort }
   })
+
+  useEffect(() => {
+    localStorage.setItem('home_show_meta', showMeta ? 'true' : 'false')
+  }, [showMeta])
 
   useEffect(() => {
     localStorage.setItem('home_post_sort', JSON.stringify(sort))
@@ -415,6 +462,30 @@ export default function BrowsePage() {
     loadPosts(1, true)
   }
 
+  const handleDeletePost = async (): Promise<void> => {
+    const target = deleteTarget
+    if (!target) return
+    setDeleteLoading(true)
+    try {
+      await window.api.files.deletePost(target.id)
+      toast.success('作品已删除')
+      // 就地摘掉这张卡，不整页重载，避免清空后跳回顶部
+      setPosts((prev) => prev.filter((p) => p.id !== target.id))
+      setTotal((prev) => Math.max(0, prev - 1))
+      // 「全部作品」留的底里也有这条，放回去时不能再冒出来
+      const snapshot = listSnapshotRef.current
+      if (snapshot) {
+        snapshot.posts = snapshot.posts.filter((p) => p.id !== target.id)
+        snapshot.total = Math.max(0, snapshot.total - 1)
+      }
+      setDeleteTarget(null)
+    } catch (e) {
+      toast.error('删除失败: ' + (e as Error).message)
+    } finally {
+      setDeleteLoading(false)
+    }
+  }
+
   const loadMore = useCallback(() => {
     const nextPage = page + 1
     setPage(nextPage)
@@ -461,6 +532,12 @@ export default function BrowsePage() {
     setViewerOpen(true)
   }, [])
 
+  // 播放框里点作者名：关掉播放框，换成作者作品弹窗
+  const openAuthorDialog = useCallback((post: DbPost) => {
+    setViewerOpen(false)
+    setAuthorDialog({ sec_uid: post.sec_uid, nickname: post.nickname })
+  }, [])
+
   const editPostTags = useCallback(
     (postId: number) => navigate(`/tags/video/${postId}`),
     [navigate]
@@ -469,6 +546,20 @@ export default function BrowsePage() {
     (secUid: string) => navigate(`/tags?user=${encodeURIComponent(secUid)}`),
     [navigate]
   )
+
+  // 单条只转写：只调语音转写服务，不抽帧、不调 AI，也不改变卡片内容
+  const transcribePost = useCallback(async (post: DbPost): Promise<void> => {
+    try {
+      await window.api.analysis.createJob({
+        kind: 'transcribe',
+        postIds: [post.id],
+        priority: true
+      })
+      toast.info('已加入转写队列')
+    } catch (error) {
+      toast.error(`转写失败: ${(error as Error).message}`)
+    }
+  }, [])
 
   /**
    * 把「全部作品」这份列表留个底（含已加载的分页和滚动位置），退出作者筛选时放回去。
@@ -545,6 +636,10 @@ export default function BrowsePage() {
             <Button variant="outline" onClick={() => setLocalImportOpen(true)}>
               <Upload className="h-4 w-4 mr-2" />
               导入本地
+            </Button>
+            <Button variant="outline" onClick={() => setXhsImportOpen(true)}>
+              <Link2 className="h-4 w-4 mr-2" />
+              导入小红书
             </Button>
             {/* Search Box */}
             <div className="relative">
@@ -685,6 +780,19 @@ export default function BrowsePage() {
             </div>
 
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowMeta((v) => !v)}
+                title={showMeta ? '隐藏卡片上的标签和内容等级' : '显示卡片上的标签和内容等级'}
+                className={`h-8 px-3 flex items-center gap-2 rounded-md border text-sm transition-colors ${
+                  showMeta
+                    ? 'border-[#0A84FF]/30 bg-[#E8F0FE] text-[#0A84FF]'
+                    : 'border-[#E5E5E7] bg-white text-[#6E6E73] hover:bg-[#F2F2F4]'
+                }`}
+              >
+                {showMeta ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+                标签与等级
+              </button>
               <span className="text-[13px] text-[#A1A1A6]">共 {total.toLocaleString()} 个视频</span>
             </div>
           </div>
@@ -829,12 +937,15 @@ export default function BrowsePage() {
                     key={post.id}
                     post={post}
                     coverUrl={getCoverUrl(post)}
+                    showMeta={showMeta}
                     onOpen={handlePostClick}
                     onAuthorClick={viewAuthorPosts}
                     onAddTags={setTagTarget}
+                    onTranscribe={transcribePost}
                     onSetLevel={setLevelTarget}
                     onEditTags={editPostTags}
                     onAuthorTags={viewAuthorTags}
+                    onDelete={setDeleteTarget}
                   />
                 ))}
               </div>
@@ -859,7 +970,14 @@ export default function BrowsePage() {
         onOpenChange={setViewerOpen}
         allPosts={posts}
         onSelectPost={setSelectedPost}
-        onAuthorClick={viewAuthorPosts}
+        onAuthorClick={openAuthorDialog}
+      />
+
+      <AuthorPostsDialog
+        open={authorDialog !== null}
+        onOpenChange={(o) => !o && setAuthorDialog(null)}
+        user={authorDialog}
+        onOpenInBrowse={viewAuthorPosts}
       />
 
       <AddTagsDialog
@@ -883,6 +1001,39 @@ export default function BrowsePage() {
         onOpenChange={setLocalImportOpen}
         onImported={handleImported}
       />
+
+      <XiaohongshuImportDialog
+        open={xhsImportOpen}
+        onOpenChange={setXhsImportOpen}
+        onImported={handleImported}
+      />
+
+      <Dialog open={deleteTarget !== null} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+        <DialogContent className="sm:max-w-[400px]">
+          <DialogHeader>
+            <DialogTitle>确认删除</DialogTitle>
+            <DialogDescription>确定要删除该作品及其文件吗？</DialogDescription>
+          </DialogHeader>
+          <p className="text-xs text-red-500 px-1">此操作不可撤销，文件将被永久删除</p>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setDeleteTarget(null)}
+              disabled={deleteLoading}
+            >
+              取消
+            </Button>
+            <Button variant="destructive" onClick={handleDeletePost} disabled={deleteLoading}>
+              {deleteLoading ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Trash2 className="h-4 w-4 mr-2" />
+              )}
+              确认删除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Page>
   )
 }
